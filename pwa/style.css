@@ -170,17 +170,33 @@ input:checked + .slider:before {
 
 /* BOTAO PLAY */
 .play-btn {
-  background: none;
-  border: none;
-  color: #1a6b8a;
+  background: #003a6a;
+  border: 1px solid #0a3a6a;
+  border-radius: 6px;
+  color: #00bfff;
   cursor: pointer;
-  font-size: 14px;
-  padding: 0 4px;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  padding: 2px 6px;
   flex-shrink: 0;
+  margin-left: 4px;
 }
 
 .play-btn:active {
-  color: #00bfff;
+  background: #005a9a;
+}
+
+/* VOICE SELECT */
+#voice-select {
+  background: #060f20;
+  border: 1px solid #0a3a6a;
+  border-radius: 6px;
+  color: #a0d4f5;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  padding: 2px 4px;
+  flex: 1;
+  max-width: 160px;
 }
 
 /* INPUT */

@@ -11,9 +11,10 @@ const statusEl    = document.getElementById("status");
 const textInput   = document.getElementById("text-input");
 const sendBtn     = document.getElementById("send-btn");
 const micBtn      = document.getElementById("mic-btn");
-const audioToggle = document.getElementById("audio-toggle");
-const orbCanvas   = document.getElementById("orb");
-const ctx         = orbCanvas.getContext("2d");
+const audioToggle  = document.getElementById("audio-toggle");
+const voiceSelect  = document.getElementById("voice-select");
+const orbCanvas    = document.getElementById("orb");
+const ctx          = orbCanvas.getContext("2d");
 
 // Carrega preferencia de audio salva
 let audioEnabled = localStorage.getItem("audioEnabled") !== "false";
@@ -23,6 +24,32 @@ audioToggle.addEventListener("change", () => {
   localStorage.setItem("audioEnabled", audioEnabled);
   if (!audioEnabled && synth) synth.cancel();
 });
+
+// Popula lista de vozes
+function loadVoices() {
+  const voices = synth.getVoices();
+  if (!voices.length) return;
+  voiceSelect.innerHTML = "";
+  const savedVoice = localStorage.getItem("selectedVoice");
+  voices.forEach((v, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = `${v.name} (${v.lang})`;
+    if (savedVoice === v.name) opt.selected = true;
+    voiceSelect.appendChild(opt);
+  });
+}
+
+voiceSelect.addEventListener("change", () => {
+  const voices = synth.getVoices();
+  const selected = voices[voiceSelect.value];
+  if (selected) localStorage.setItem("selectedVoice", selected.name);
+});
+
+if (synth) {
+  synth.onvoiceschanged = loadVoices;
+  loadVoices();
+}
 
 // ============================================================
 // ESTADO
@@ -129,8 +156,8 @@ function addMessage(sender, text, senderClass) {
   if (senderClass === "sender-jarvis") {
     const playBtn = document.createElement("button");
     playBtn.className = "play-btn";
-    playBtn.textContent = "▶";
-    playBtn.title = "Ouvir";
+    playBtn.textContent = "ouvir";
+    playBtn.setAttribute("aria-label", "ouvir");
     playBtn.addEventListener("click", () => speak(text));
     div.appendChild(playBtn);
   }
@@ -155,10 +182,16 @@ function speak(text) {
   utter.rate = 1.0;
   utter.pitch = 0.9;
 
-  // Tenta usar uma voz em portugues
+  // Usa a voz selecionada pelo usuario
   const voices = synth.getVoices();
-  const ptVoice = voices.find(v => v.lang.startsWith("pt"));
-  if (ptVoice) utter.voice = ptVoice;
+  const savedVoice = localStorage.getItem("selectedVoice");
+  if (savedVoice) {
+    const found = voices.find(v => v.name === savedVoice);
+    if (found) utter.voice = found;
+  } else {
+    const ptVoice = voices.find(v => v.lang.startsWith("pt"));
+    if (ptVoice) utter.voice = ptVoice;
+  }
 
   if (!audioEnabled) return;
 
