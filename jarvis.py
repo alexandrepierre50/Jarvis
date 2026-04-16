@@ -9,6 +9,8 @@ import requests
 from datetime import datetime
 from tkinter import filedialog
 from PIL import ImageGrab
+import pdfplumber
+from youtube_transcript_api import YouTubeTranscriptApi
 from elevenlabs.client import ElevenLabs
 import pygame
 from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ASSISTANT_NAME, USER_NAME, LANGUAGE, OBSIDIAN_VAULT
@@ -204,7 +206,55 @@ class JarvisApp(ctk.CTk):
             corner_radius=10,
             command=self._open_diary
         )
-        self.diary_btn.pack(side="left")
+        self.diary_btn.pack(side="left", padx=(0, 8))
+
+        self.pdf_btn = ctk.CTkButton(
+            bottom_frame,
+            text="PDF",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            fg_color="#001a3a",
+            hover_color="#002a5a",
+            text_color="#00bfff",
+            border_width=1,
+            border_color="#0a3a6a",
+            width=60,
+            height=42,
+            corner_radius=10,
+            command=self._open_pdf
+        )
+        self.pdf_btn.pack(side="left", padx=(0, 8))
+
+        self.yt_btn = ctk.CTkButton(
+            bottom_frame,
+            text="YouTube",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            fg_color="#001a3a",
+            hover_color="#002a5a",
+            text_color="#00bfff",
+            border_width=1,
+            border_color="#0a3a6a",
+            width=90,
+            height=42,
+            corner_radius=10,
+            command=self._open_youtube
+        )
+        self.yt_btn.pack(side="left", padx=(0, 8))
+
+        self.skills_btn = ctk.CTkButton(
+            bottom_frame,
+            text="Skills",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            fg_color="#1a0030",
+            hover_color="#2a0050",
+            text_color="#bf7fff",
+            border_width=1,
+            border_color="#3a0a6a",
+            width=70,
+            height=42,
+            corner_radius=10,
+            command=self._open_skills
+        )
+        self.skills_btn.pack(side="left")
 
     def _set_status(self, text, color="#1a6b8a"):
         self.status_label.configure(text=text, text_color=color)
@@ -340,7 +390,44 @@ class JarvisApp(ctk.CTk):
             self.is_listening = False
             self.after(0, lambda: self.mic_btn.configure(text="Microfone", fg_color="#001a3a"))
 
+    def _detect_skill(self, text):
+        """Detecta se o comando é uma skill e executa diretamente. Retorna True se foi skill."""
+        t = text.lower().strip()
+
+        # Nota do dia
+        if any(k in t for k in ["nota do dia", "criar nota", "nota de hoje", "diário de hoje", "abrir diário"]):
+            self._skill_today()
+            return True
+
+        # Revisão semanal
+        if any(k in t for k in ["revisão semanal", "revisar semana", "relatório semanal", "review semanal"]):
+            self._skill_weekly_review()
+            return True
+
+        # Importar trade
+        if any(k in t for k in ["importar trade", "importar trades", "importar do diário"]):
+            self._skill_import_trade()
+            return True
+
+        # Registrar / analisar trade
+        if any(k in t for k in ["registrar trade", "registrar operação", "analisar trade", "novo trade"]):
+            self._skill_trade()
+            return True
+
+        # Pesquisar — extrai o tema do comando
+        for prefix in ["pesquisar sobre ", "pesquisar ", "pesquisa sobre ", "pesquisa ", "buscar sobre ", "buscar "]:
+            if t.startswith(prefix):
+                topic = text[len(prefix):].strip()
+                if topic:
+                    self._add_message(USER_NAME, f"[Pesquisa: {topic}]", "#bf7fff")
+                    threading.Thread(target=self._run_skill_research, args=(topic,), daemon=True).start()
+                    return True
+
+        return False
+
     def _process_input(self, text):
+        if self._detect_skill(text):
+            return
         self._add_message(USER_NAME, text, "#ffaa00")
         self._set_status("Pensando...", "#00bfff")
         threading.Thread(target=self._get_ai_response, args=(text,), daemon=True).start()
@@ -559,6 +646,410 @@ class JarvisApp(ctk.CTk):
                 ctk.CTkLabel(entries_frame, text="Nenhuma entrada encontrada.", text_color="#1a6b8a").pack(pady=10)
 
         load_entries()
+
+
+    # --------------------------------------------------------
+    # SKILLS
+    # --------------------------------------------------------
+    def _open_skills(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Skills - JARVIS")
+        win.geometry("420x380")
+        win.configure(fg_color="#050d1a")
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="SKILLS DO OBSIDIAN",
+                     font=ctk.CTkFont(family="Courier New", size=16, weight="bold"),
+                     text_color="#bf7fff").pack(pady=(16, 4))
+        ctk.CTkLabel(win, text="Escolha uma skill para executar:",
+                     font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#1a6b8a").pack(pady=(0, 12))
+
+        skills = [
+            ("Nota do Dia (/today)", "#003a6a", "#00bfff", self._skill_today),
+            ("Revisao Semanal (/weekly-review)", "#003a6a", "#00bfff", self._skill_weekly_review),
+            ("Pesquisar e Salvar (/research)", "#003a6a", "#00bfff", self._skill_research),
+            ("Registrar Trade (/trade)", "#1a003a", "#bf7fff", self._skill_trade),
+            ("Importar Trade do Diario", "#0a1a00", "#00ff88", self._skill_import_trade),
+        ]
+
+        for label, fg, tc, cmd in skills:
+            ctk.CTkButton(win, text=label,
+                          font=ctk.CTkFont(family="Courier New", size=13),
+                          fg_color=fg, hover_color="#005a9a",
+                          text_color=tc, height=44, corner_radius=10,
+                          command=lambda c=cmd, w=win: [w.destroy(), c()]
+                          ).pack(fill="x", padx=20, pady=5)
+
+    def _skill_import_trade(self):
+        diary_folder = os.path.join(OBSIDIAN_VAULT, "Diario JARVIS")
+        files = sorted([f for f in os.listdir(diary_folder) if f.endswith(".md")], reverse=True)
+        if not files:
+            self._add_message("ERRO", "Nenhuma nota encontrada no diário.", "#ff4444")
+            return
+
+        # Le a nota mais recente
+        latest = os.path.join(diary_folder, files[0])
+        with open(latest, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self._add_message(USER_NAME, f"[Importando trade de: {files[0]}]", "#00ff88")
+        threading.Thread(target=self._run_import_trade, args=(content, files[0]),daemon=True).start()
+
+    def _run_import_trade(self, diary_content, filename):
+        try:
+            self.after(0, lambda: self._set_status("Analisando trade do diário...", "#00ff88"))
+            prompt = f"""Analise o conteúdo deste diário e extraia todas as operações de trade registradas.
+Para cada operação encontrada, faça uma análise completa incluindo:
+- Dados da operação
+- Relação risco/retorno
+- Avaliação da qualidade
+- Pontos positivos e de melhoria
+- Nota geral (0-10)
+
+Conteúdo do diário ({filename}):
+{diary_content}"""
+
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=60)
+            analysis = res.json()["reply"]
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            trade_path = os.path.join(OBSIDIAN_VAULT, "Trades", f"{today}-importado-diario.md")
+            os.makedirs(os.path.dirname(trade_path), exist_ok=True)
+            with open(trade_path, "w", encoding="utf-8") as f:
+                f.write(f"# Trades Importados do Diário - {today}\n\n")
+                f.write(f"**Origem:** {filename}\n\n")
+                f.write(f"## Análise JARVIS\n\n{analysis}")
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, analysis, "#00bfff"))
+            self.after(0, lambda: self._speak("Trade importado do diário e analisado com sucesso."))
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", str(e), "#ff4444"))
+
+    def _skill_today(self):
+        self._add_message(USER_NAME, "[Skill: Nota do Dia]", "#bf7fff")
+        threading.Thread(target=self._run_skill_today, daemon=True).start()
+
+    def _run_skill_today(self):
+        try:
+            self.after(0, lambda: self._set_status("Gerando nota do dia...", "#bf7fff"))
+            today = datetime.now().strftime("%Y-%m-%d")
+            note_path = os.path.join(OBSIDIAN_VAULT, "Diario JARVIS", f"{today}.md")
+
+            if os.path.exists(note_path):
+                msg = f"Nota do dia já existe: {note_path}"
+                self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00bfff"))
+                self.after(0, lambda: self._speak(msg))
+                return
+
+            prompt = f"""Crie uma nota diária para hoje ({today}) no meu diário de trading e estudos.
+Retorne APENAS o conteúdo markdown da nota, sem explicações adicionais.
+Use este formato:
+# Diário - {today}
+
+## Prioridades do Dia
+- [ ]
+- [ ]
+- [ ]
+
+## Trades
+(registrar operações aqui)
+
+## Estudos
+(anotar o que aprendi)
+
+## Reflexões
+(pensamentos do dia)
+
+## Tarefas Pendentes
+- [ ] """
+
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=30)
+            content = res.json()["reply"]
+
+            with open(note_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            msg = f"Nota do dia criada no Obsidian: {today}"
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00bfff"))
+            self.after(0, lambda: self._speak(msg))
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", str(e), "#ff4444"))
+
+    def _skill_weekly_review(self):
+        self._add_message(USER_NAME, "[Skill: Revisão Semanal]", "#bf7fff")
+        threading.Thread(target=self._run_skill_weekly, daemon=True).start()
+
+    def _run_skill_weekly(self):
+        try:
+            self.after(0, lambda: self._set_status("Analisando semana...", "#bf7fff"))
+            diary_folder = os.path.join(OBSIDIAN_VAULT, "Diario JARVIS")
+            files = sorted([f for f in os.listdir(diary_folder) if f.endswith(".md")], reverse=True)[:7]
+
+            all_content = ""
+            for fname in files:
+                fpath = os.path.join(diary_folder, fname)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    all_content += f"\n\n### {fname}\n{f.read()}"
+
+            if not all_content:
+                msg = "Nenhuma nota encontrada para revisar."
+                self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00bfff"))
+                return
+
+            prompt = f"Faça uma revisão semanal detalhada das minhas notas. Analise trades, estudos, padrões e dê feedback honesto:\n\n{all_content[:6000]}"
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=60)
+            review = res.json()["reply"]
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            review_path = os.path.join(OBSIDIAN_VAULT, "Trades", f"revisao-semanal-{today}.md")
+            os.makedirs(os.path.dirname(review_path), exist_ok=True)
+            with open(review_path, "w", encoding="utf-8") as f:
+                f.write(f"# Revisão Semanal - {today}\n\n{review}")
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, review, "#00bfff"))
+            self.after(0, lambda: self._speak(f"Revisão semanal gerada e salva no Obsidian, Xande."))
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", str(e), "#ff4444"))
+
+    def _skill_research(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Pesquisar")
+        win.geometry("420x160")
+        win.configure(fg_color="#050d1a")
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Tema da pesquisa:",
+                     font=ctk.CTkFont(family="Courier New", size=12),
+                     text_color="#1a6b8a").pack(pady=(16, 4), padx=20, anchor="w")
+
+        inp = ctk.CTkEntry(win, fg_color="#060f20", border_color="#0a3a6a",
+                           text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12), height=40)
+        inp.pack(fill="x", padx=20, pady=4)
+
+        def run():
+            topic = inp.get().strip()
+            if not topic:
+                return
+            win.destroy()
+            self._add_message(USER_NAME, f"[Pesquisa: {topic}]", "#bf7fff")
+            threading.Thread(target=self._run_skill_research, args=(topic,), daemon=True).start()
+
+        ctk.CTkButton(win, text="Pesquisar e Salvar no Obsidian",
+                      fg_color="#003a6a", text_color="#00bfff",
+                      font=ctk.CTkFont(family="Courier New", size=12),
+                      height=40, command=run).pack(fill="x", padx=20, pady=8)
+        inp.bind("<Return>", lambda e: run())
+
+    def _run_skill_research(self, topic):
+        try:
+            self.after(0, lambda: self._set_status(f"Pesquisando: {topic}...", "#bf7fff"))
+            prompt = f"""Pesquise sobre '{topic}' e me retorne um relatório completo em markdown com:
+- Resumo executivo
+- Pontos principais
+- Aplicação prática para trading (se relevante)
+- Conclusão
+
+Retorne APENAS o conteúdo markdown."""
+
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=60)
+            content = res.json()["reply"]
+
+            safe_topic = "".join(c for c in topic if c.isalnum() or c in " -_").strip()
+            research_path = os.path.join(OBSIDIAN_VAULT, "Recursos", f"{safe_topic}.md")
+            os.makedirs(os.path.dirname(research_path), exist_ok=True)
+            with open(research_path, "w", encoding="utf-8") as f:
+                f.write(f"# {topic}\n\n{content}")
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, content[:500] + "...", "#00bfff"))
+            self.after(0, lambda: self._speak(f"Pesquisa sobre {topic} salva no Obsidian."))
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", str(e), "#ff4444"))
+
+    def _skill_trade(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Registrar Trade")
+        win.geometry("450x350")
+        win.configure(fg_color="#050d1a")
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="REGISTRAR TRADE",
+                     font=ctk.CTkFont(family="Courier New", size=14, weight="bold"),
+                     text_color="#bf7fff").pack(pady=(12, 8))
+
+        fields = {}
+        labels = ["Ativo", "Entrada", "Saída", "Stop Loss", "Resultado (pips/pontos)"]
+        for lbl in labels:
+            ctk.CTkLabel(win, text=lbl + ":", font=ctk.CTkFont(family="Courier New", size=11),
+                         text_color="#1a6b8a").pack(anchor="w", padx=20)
+            e = ctk.CTkEntry(win, fg_color="#060f20", border_color="#0a3a6a",
+                             text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12), height=32)
+            e.pack(fill="x", padx=20, pady=(0, 4))
+            fields[lbl] = e
+
+        def run():
+            data = {k: v.get().strip() for k, v in fields.items()}
+            win.destroy()
+            self._add_message(USER_NAME, f"[Trade: {data.get('Ativo', '')}]", "#bf7fff")
+            threading.Thread(target=self._run_skill_trade, args=(data,), daemon=True).start()
+
+        ctk.CTkButton(win, text="Analisar e Salvar no Obsidian",
+                      fg_color="#1a003a", text_color="#bf7fff",
+                      font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+                      height=40, command=run).pack(fill="x", padx=20, pady=8)
+
+    def _run_skill_trade(self, data):
+        try:
+            self.after(0, lambda: self._set_status("Analisando trade...", "#bf7fff"))
+            prompt = f"""Analise este trade e dê um feedback detalhado:
+Ativo: {data.get('Ativo')}
+Entrada: {data.get('Entrada')}
+Saída: {data.get('Saída')}
+Stop Loss: {data.get('Stop Loss')}
+Resultado: {data.get('Resultado (pips/pontos)')}
+
+Calcule a relação risco/retorno, avalie a qualidade da operação e sugira melhorias.
+Retorne a análise em markdown."""
+
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=30)
+            analysis = res.json()["reply"]
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            ativo = data.get("Ativo", "trade").replace("/", "-")
+            trade_path = os.path.join(OBSIDIAN_VAULT, "Trades", f"{today}-{ativo}.md")
+            os.makedirs(os.path.dirname(trade_path), exist_ok=True)
+            with open(trade_path, "w", encoding="utf-8") as f:
+                f.write(f"# Trade - {ativo} - {today}\n\n")
+                for k, v in data.items():
+                    f.write(f"**{k}:** {v}\n")
+                f.write(f"\n## Análise JARVIS\n\n{analysis}")
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, analysis, "#00bfff"))
+            self.after(0, lambda: self._speak(f"Trade analisado e salvo no Obsidian."))
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", str(e), "#ff4444"))
+
+    # --------------------------------------------------------
+    # YOUTUBE
+    # --------------------------------------------------------
+    def _open_youtube(self):
+        win = ctk.CTkToplevel(self)
+        win.title("YouTube - JARVIS")
+        win.geometry("500x200")
+        win.configure(fg_color="#050d1a")
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="ANALISAR VIDEO DO YOUTUBE",
+                     font=ctk.CTkFont(family="Courier New", size=14, weight="bold"),
+                     text_color="#00bfff").pack(pady=(16, 8))
+
+        ctk.CTkLabel(win, text="Cole o link do vídeo:",
+                     font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#1a6b8a").pack(anchor="w", padx=20)
+
+        url_input = ctk.CTkEntry(win, fg_color="#060f20", border_color="#0a3a6a",
+                                 text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12),
+                                 height=40)
+        url_input.pack(fill="x", padx=20, pady=8)
+
+        def analisar():
+            url = url_input.get().strip()
+            if not url:
+                return
+            win.destroy()
+            threading.Thread(target=self._process_youtube, args=(url,), daemon=True).start()
+
+        ctk.CTkButton(win, text="Analisar Vídeo", fg_color="#003a6a", hover_color="#005a9a",
+                      text_color="#00bfff", font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+                      height=40, command=analisar).pack(fill="x", padx=20, pady=(0, 16))
+
+        url_input.bind("<Return>", lambda e: analisar())
+
+    def _process_youtube(self, url):
+        try:
+            self.after(0, lambda: self._set_status("Buscando transcrição...", "#00bfff"))
+            self.after(0, lambda: self._add_message(USER_NAME, f"[YouTube: {url}]", "#ffaa00"))
+
+            # Extrai o ID do video
+            if "v=" in url:
+                video_id = url.split("v=")[1].split("&")[0]
+            elif "youtu.be/" in url:
+                video_id = url.split("youtu.be/")[1].split("?")[0]
+            else:
+                raise ValueError("Link inválido")
+
+            # Busca transcricao
+            ytt = YouTubeTranscriptApi()
+            try:
+                transcript_list = ytt.fetch(video_id, languages=["pt", "pt-BR", "en"])
+            except Exception:
+                transcript_list = ytt.fetch(video_id)
+            transcript = " ".join([t.text for t in transcript_list])
+
+            if not transcript:
+                raise ValueError("Vídeo sem transcrição disponível")
+
+            prompt = f"Analisei a transcrição de um vídeo do YouTube. Faça um resumo completo e detalhado, explicando os pontos principais de forma didática:\n\n{transcript[:8000]}"
+
+            self.after(0, lambda: self._set_status("JARVIS analisando vídeo...", "#00bfff"))
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=60)
+            res.raise_for_status()
+            reply = res.json()["reply"]
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
+            self.after(0, lambda: self._speak(reply))
+
+        except Exception as e:
+            msg = f"Erro ao processar vídeo: {str(e)}"
+            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
+    # --------------------------------------------------------
+    # PDF
+    # --------------------------------------------------------
+    def _open_pdf(self):
+        path = filedialog.askopenfilename(
+            title="Selecionar PDF",
+            filetypes=[("PDF", "*.pdf")]
+        )
+        if not path:
+            return
+
+        self._set_status("Lendo PDF...", "#00bfff")
+        threading.Thread(target=self._process_pdf, args=(path,), daemon=True).start()
+
+    def _process_pdf(self, path):
+        try:
+            text = ""
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages[:20]:  # limita a 20 paginas
+                    text += page.extract_text() or ""
+
+            if not text.strip():
+                self.after(0, lambda: self._add_message("ERRO", "Nao foi possivel extrair texto do PDF.", "#ff4444"))
+                return
+
+            filename = os.path.basename(path)
+            self.after(0, lambda: self._add_message(USER_NAME, f"[PDF enviado: {filename}]", "#ffaa00"))
+
+            # Manda para o servidor com instrucao
+            prompt = f"Analisei o seguinte PDF chamado '{filename}'. Por favor, faça um resumo detalhado do conteúdo, destacando os pontos principais:\n\n{text[:8000]}"
+
+            self._set_status("JARVIS analisando PDF...", "#00bfff")
+            res = requests.post(
+                f"{SERVER_URL}/chat",
+                json={"message": prompt},
+                timeout=60
+            )
+            res.raise_for_status()
+            reply = res.json()["reply"]
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
+            self.after(0, lambda: self._speak(reply))
+
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao processar PDF: {str(e)}", "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
 
 
 # ============================================================
