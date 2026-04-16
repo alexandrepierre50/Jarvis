@@ -3,7 +3,7 @@ echo ===============================================
 echo    Instalando dependencias do JARVIS...
 echo ===============================================
 echo.
-pip install customtkinter anthropic SpeechRecognition pyttsx3 pillow
+pip install -r requirements-desktop.txt
 echo.
 echo Instalando PyAudio...
 pip install pyaudio
