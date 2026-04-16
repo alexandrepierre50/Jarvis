@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#050d1a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="JARVIS">
+  <link rel="manifest" href="manifest.json">
+  <title>J.A.R.V.I.S</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- HEADER -->
+    <div id="header">
+      <div id="title">J.A.R.V.I.S</div>
+      <div id="subtitle">Just A Rather Very Intelligent System</div>
+      <div id="status">Inicializando...</div>
+    </div>
+
+    <!-- ANIMACAO -->
+    <div id="orb-container">
+      <canvas id="orb" width="180" height="180"></canvas>
+    </div>
+
+    <!-- CHAT -->
+    <div id="chat"></div>
+
+    <!-- INPUT -->
+    <div id="input-area">
+      <input type="text" id="text-input" placeholder="Digite uma mensagem..." autocomplete="off">
+      <button id="send-btn">&#9658;</button>
+      <button id="mic-btn">&#127908;</button>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
