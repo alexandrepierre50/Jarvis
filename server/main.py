@@ -44,16 +44,16 @@ SEARCH_TOOL = {
 
 def do_search(query: str) -> str:
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=4))
+        with DDGS(timeout=8) as ddgs:
+            results = list(ddgs.text(query, max_results=3))
         if not results:
             return "Nenhum resultado encontrado."
         output = []
         for r in results:
-            output.append(f"Titulo: {r.get('title', '')}\nResumo: {r.get('body', '')}\nFonte: {r.get('href', '')}")
+            output.append(f"Titulo: {r.get('title', '')}\nResumo: {r.get('body', '')}")
         return "\n\n".join(output)
     except Exception as e:
-        return f"Erro na busca: {str(e)}"
+        return f"Nao foi possivel buscar informacoes no momento: {str(e)}"
 
 # ============================================================
 # APP
