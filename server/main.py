@@ -12,7 +12,6 @@ from database import init_db, save_message, get_history, clear_history, save_dia
 # ============================================================
 # CONFIGURACAO
 # ============================================================
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ASSISTANT_NAME = "Jarvis"
 USER_NAME = "Senhor"
 
@@ -70,7 +69,7 @@ app.add_middleware(
 
 init_db()
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = anthropic.Anthropic()  # usa ANTHROPIC_API_KEY do ambiente automaticamente
 
 # ============================================================
 # MODELOS
