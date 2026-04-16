@@ -183,7 +183,23 @@ class JarvisApp(ctk.CTk):
             corner_radius=10,
             command=self._toggle_listen
         )
-        self.mic_btn.pack(side="left")
+        self.mic_btn.pack(side="left", padx=(0, 8))
+
+        self.diary_btn = ctk.CTkButton(
+            bottom_frame,
+            text="Diario",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            fg_color="#001a3a",
+            hover_color="#002a5a",
+            text_color="#00bfff",
+            border_width=1,
+            border_color="#0a3a6a",
+            width=80,
+            height=42,
+            corner_radius=10,
+            command=self._open_diary
+        )
+        self.diary_btn.pack(side="left")
 
     def _set_status(self, text, color="#1a6b8a"):
         self.status_label.configure(text=text, text_color=color)
@@ -341,6 +357,77 @@ class JarvisApp(ctk.CTk):
             msg = f"Erro ao contatar o servidor: {str(e)}"
             self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
             self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
+    # --------------------------------------------------------
+    # DIARIO
+    # --------------------------------------------------------
+    def _open_diary(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Diario do JARVIS")
+        win.geometry("600x500")
+        win.configure(fg_color="#050d1a")
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="DIARIO", font=ctk.CTkFont(family="Courier New", size=20, weight="bold"),
+                     text_color="#00bfff").pack(pady=(16, 4))
+
+        # Campo nova entrada
+        entry_frame = ctk.CTkFrame(win, fg_color="transparent")
+        entry_frame.pack(fill="x", padx=16, pady=8)
+
+        ctk.CTkLabel(entry_frame, text="Titulo (opcional):", font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#1a6b8a").pack(anchor="w")
+        title_input = ctk.CTkEntry(entry_frame, fg_color="#060f20", border_color="#0a3a6a",
+                                   text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12))
+        title_input.pack(fill="x", pady=(2, 8))
+
+        ctk.CTkLabel(entry_frame, text="Entrada:", font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#1a6b8a").pack(anchor="w")
+        content_input = ctk.CTkTextbox(entry_frame, fg_color="#060f20", border_color="#0a3a6a",
+                                       text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12),
+                                       height=80)
+        content_input.pack(fill="x", pady=(2, 8))
+
+        # Entradas anteriores
+        entries_frame = ctk.CTkScrollableFrame(win, fg_color="#060f20", corner_radius=8,
+                                                border_width=1, border_color="#0a2a4a")
+        entries_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        def save_entry():
+            title = title_input.get().strip()
+            content = content_input.get("1.0", "end").strip()
+            if not content:
+                return
+            try:
+                requests.post(f"{SERVER_URL}/diary", json={"title": title, "content": content}, timeout=10)
+                title_input.delete(0, "end")
+                content_input.delete("1.0", "end")
+                load_entries()
+            except Exception as e:
+                print(f"Erro ao salvar: {e}")
+
+        def load_entries():
+            for w in entries_frame.winfo_children():
+                w.destroy()
+            try:
+                res = requests.get(f"{SERVER_URL}/diary", timeout=10)
+                entries = res.json()
+                for e in entries:
+                    f = ctk.CTkFrame(entries_frame, fg_color="#070f20", corner_radius=6)
+                    f.pack(fill="x", pady=3, padx=4)
+                    header = f"{e['timestamp'][:10]}  {e['title'] or '(sem titulo)'}"
+                    ctk.CTkLabel(f, text=header, font=ctk.CTkFont(family="Courier New", size=10, weight="bold"),
+                                 text_color="#00bfff").pack(anchor="w", padx=8, pady=(4, 0))
+                    ctk.CTkLabel(f, text=e["content"], font=ctk.CTkFont(family="Courier New", size=11),
+                                 text_color="#a0d4f5", wraplength=500, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
+            except Exception as e:
+                ctk.CTkLabel(entries_frame, text="Erro ao carregar entradas.", text_color="#ff4444").pack()
+
+        ctk.CTkButton(entry_frame, text="Salvar Entrada", fg_color="#003a6a", hover_color="#005a9a",
+                      text_color="#00bfff", font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+                      command=save_entry).pack(fill="x")
+
+        load_entries()
 
 
 # ============================================================

@@ -75,6 +75,25 @@ def do_search(query: str) -> str:
     except Exception as e:
         return f"Nao foi possivel buscar informacoes no momento: {str(e)}"
 
+DIARY_TOOL = {
+    "name": "save_diary",
+    "description": "Salva uma entrada no diario do usuario. Use quando o usuario pedir para anotar, registrar ou salvar algo no diario.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Titulo curto da entrada"
+            },
+            "content": {
+                "type": "string",
+                "description": "Conteudo completo a ser salvo no diario"
+            }
+        },
+        "required": ["content"]
+    }
+}
+
 # ============================================================
 # APP
 # ============================================================
@@ -115,24 +134,35 @@ def chat(req: ChatRequest):
     history = get_history(limit=20)
 
     try:
-        # Primeira chamada — Claude pode pedir uma busca
+        tools = [SEARCH_TOOL, DIARY_TOOL]
+
+        # Primeira chamada
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
             system=get_system_prompt(),
-            tools=[SEARCH_TOOL],
+            tools=tools,
             messages=history
         )
 
-        # Se Claude quer buscar na internet
+        # Se Claude quer usar uma ferramenta
         if response.stop_reason == "tool_use":
             tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
 
             if tool_use_block:
-                query = tool_use_block.input.get("query", req.message)
-                search_result = do_search(query)
+                # Executa a ferramenta correta
+                if tool_use_block.name == "search_web":
+                    query = tool_use_block.input.get("query", req.message)
+                    tool_result = do_search(query)
+                elif tool_use_block.name == "save_diary":
+                    title = tool_use_block.input.get("title", "")
+                    content = tool_use_block.input.get("content", "")
+                    save_diary(title, content)
+                    tool_result = "Entrada salva no diario com sucesso."
+                else:
+                    tool_result = "Ferramenta desconhecida."
 
-                # Monta o historico com o resultado da busca
+                # Monta historico com resultado
                 assistant_content = []
                 for b in response.content:
                     if b.type == "text":
@@ -151,7 +181,7 @@ def chat(req: ChatRequest):
                     "content": [{
                         "type": "tool_result",
                         "tool_use_id": tool_use_block.id,
-                        "content": search_result
+                        "content": tool_result
                     }]
                 })
 
@@ -159,7 +189,7 @@ def chat(req: ChatRequest):
                     model="claude-sonnet-4-6",
                     max_tokens=512,
                     system=get_system_prompt(),
-                    tools=[SEARCH_TOOL],
+                    tools=tools,
                     messages=history
                 )
 
