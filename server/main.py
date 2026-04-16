@@ -1,10 +1,12 @@
 import os
+import json
 import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from duckduckgo_search import DDGS
 from database import init_db, save_message, get_history, clear_history, save_diary, get_diary, save_task, get_tasks, complete_task
 
 # ============================================================
@@ -19,8 +21,40 @@ inspirado no JARVIS do Homem de Ferro. Voce fala de forma educada, precisa e lig
 sempre chamando o usuario de "{USER_NAME}".
 Voce e capaz de ajudar com qualquer tarefa: responder perguntas, dar informacoes,
 fazer calculos, ajudar com tecnologia, estudos, tarefas diarias, e muito mais.
+Quando precisar de informacoes atuais, noticias, clima, cotacoes ou qualquer dado recente, use a ferramenta de busca.
 Responda sempre em portugues do Brasil, de forma concisa e direta.
 Mantenha respostas curtas quando possivel, pois serao convertidas em voz."""
+
+# ============================================================
+# FERRAMENTA DE BUSCA
+# ============================================================
+SEARCH_TOOL = {
+    "name": "search_web",
+    "description": "Pesquisa informacoes atuais na internet. Use quando precisar de noticias recentes, clima, cotacoes, eventos atuais ou qualquer informacao que possa ter mudado.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "O termo de busca em portugues ou ingles"
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+def do_search(query: str) -> str:
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=4))
+        if not results:
+            return "Nenhum resultado encontrado."
+        output = []
+        for r in results:
+            output.append(f"Titulo: {r.get('title', '')}\nResumo: {r.get('body', '')}\nFonte: {r.get('href', '')}")
+        return "\n\n".join(output)
+    except Exception as e:
+        return f"Erro na busca: {str(e)}"
 
 # ============================================================
 # APP
@@ -60,15 +94,44 @@ def chat(req: ChatRequest):
     history = get_history(limit=20)
 
     try:
+        # Primeira chamada — Claude pode pedir uma busca
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
             system=SYSTEM_PROMPT,
+            tools=[SEARCH_TOOL],
             messages=history
         )
-        reply = response.content[0].text
+
+        # Se Claude quer buscar na internet
+        if response.stop_reason == "tool_use":
+            tool_use = next(b for b in response.content if b.type == "tool_use")
+            query = tool_use.input["query"]
+            search_result = do_search(query)
+
+            # Segunda chamada com o resultado da busca
+            history.append({"role": "assistant", "content": response.content})
+            history.append({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use.id,
+                    "content": search_result
+                }]
+            })
+
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                system=SYSTEM_PROMPT,
+                tools=[SEARCH_TOOL],
+                messages=history
+            )
+
+        reply = next(b.text for b in response.content if hasattr(b, "text"))
         save_message("assistant", reply)
         return {"reply": reply}
+
     except anthropic.AuthenticationError:
         raise HTTPException(status_code=401, detail="Chave de API invalida.")
     except Exception as e:

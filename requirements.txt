@@ -3,3 +3,4 @@ uvicorn
 anthropic
 pydantic
 aiofiles
+duckduckgo-search
