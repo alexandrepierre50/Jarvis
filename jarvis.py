@@ -1,12 +1,15 @@
 import customtkinter as ctk
 import threading
 import speech_recognition as sr
-import pyttsx3
-import anthropic
-import time
 import math
-import random
-from config import ANTHROPIC_API_KEY, ASSISTANT_NAME, USER_NAME, SYSTEM_PROMPT, LANGUAGE
+import tempfile
+import os
+import requests
+from elevenlabs.client import ElevenLabs
+import pygame
+from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ASSISTANT_NAME, USER_NAME, LANGUAGE
+
+SERVER_URL = "https://web-production-b9c17.up.railway.app"
 
 # ============================================================
 # CONFIGURACAO VISUAL
@@ -29,21 +32,15 @@ class JarvisApp(ctk.CTk):
         # Estado
         self.is_listening = False
         self.is_speaking = False
-        self.conversation_history = []
 
-        # Inicializa TTS
-        self.engine = pyttsx3.init()
-        self.engine.setProperty("rate", 165)
-        self.engine.setProperty("volume", 1.0)
-        self._set_voice()
+        # Inicializa ElevenLabs
+        self.eleven = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        pygame.mixer.init()
 
         # Inicializa reconhecimento de voz
         self.recognizer = sr.Recognizer()
         self.recognizer.energy_threshold = 300
         self.recognizer.pause_threshold = 1.0
-
-        # Cliente Anthropic
-        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         # Constroi interface
         self._build_ui()
@@ -60,26 +57,35 @@ class JarvisApp(ctk.CTk):
     # --------------------------------------------------------
     # VOZ
     # --------------------------------------------------------
-    def _set_voice(self):
-        voices = self.engine.getProperty("voices")
-        for v in voices:
-            if "brazil" in v.name.lower() or "portuguese" in v.name.lower() or "brasil" in v.name.lower():
-                self.engine.setProperty("voice", v.id)
-                return
-        # fallback: primeira voz disponivel
-        if voices:
-            self.engine.setProperty("voice", voices[0].id)
-
     def _speak(self, text):
         self.is_speaking = True
         self._set_status("Falando...", "#00bfff")
         threading.Thread(target=self._speak_thread, args=(text,), daemon=True).start()
 
     def _speak_thread(self, text):
-        self.engine.say(text)
-        self.engine.runAndWait()
-        self.is_speaking = False
-        self.after(0, lambda: self._set_status("Aguardando...", "#1a6b8a"))
+        try:
+            audio = self.eleven.text_to_speech.convert(
+                voice_id=ELEVENLABS_VOICE_ID,
+                text=text,
+                model_id="eleven_multilingual_v2"
+            )
+            # Salva em arquivo temporario e toca
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                for chunk in audio:
+                    f.write(chunk)
+                tmp_path = f.name
+
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                pygame.time.Clock().tick(10)
+            pygame.mixer.music.unload()
+            os.unlink(tmp_path)
+        except Exception as e:
+            print(f"Erro TTS: {e}")
+        finally:
+            self.is_speaking = False
+            self.after(0, lambda: self._set_status("Aguardando...", "#1a6b8a"))
 
     # --------------------------------------------------------
     # INTERFACE
@@ -316,31 +322,23 @@ class JarvisApp(ctk.CTk):
     def _process_input(self, text):
         self._add_message(USER_NAME, text, "#ffaa00")
         self._set_status("Pensando...", "#00bfff")
+        threading.Thread(target=self._get_ai_response, args=(text,), daemon=True).start()
 
-        self.conversation_history.append({"role": "user", "content": text})
-
-        threading.Thread(target=self._get_ai_response, daemon=True).start()
-
-    def _get_ai_response(self):
+    def _get_ai_response(self, text):
         try:
-            response = self.client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=512,
-                system=SYSTEM_PROMPT,
-                messages=self.conversation_history
+            res = requests.post(
+                f"{SERVER_URL}/chat",
+                json={"message": text},
+                timeout=30
             )
-            reply = response.content[0].text
-            self.conversation_history.append({"role": "assistant", "content": reply})
+            res.raise_for_status()
+            reply = res.json()["reply"]
 
             self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
             self.after(0, lambda: self._speak(reply))
 
-        except anthropic.AuthenticationError:
-            msg = "Chave de API invalida. Verifique o arquivo config.py."
-            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
-            self.after(0, lambda: self._set_status("Erro de autenticacao.", "#ff4444"))
         except Exception as e:
-            msg = f"Erro ao contatar a IA: {str(e)}"
+            msg = f"Erro ao contatar o servidor: {str(e)}"
             self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
             self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
 

@@ -16,7 +16,7 @@ from database import init_db, save_message, get_history, clear_history, save_dia
 # CONFIGURACAO
 # ============================================================
 ASSISTANT_NAME = "Jarvis"
-USER_NAME = "Senhor"
+USER_NAME = "Xande"
 
 def get_system_prompt():
     now = datetime.now(ZoneInfo("America/Sao_Paulo"))
