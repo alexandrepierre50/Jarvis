@@ -47,8 +47,11 @@ voiceSelect.addEventListener("change", () => {
 });
 
 if (synth) {
-  synth.onvoiceschanged = loadVoices;
   loadVoices();
+  synth.onvoiceschanged = loadVoices;
+  // iOS carrega vozes com delay
+  setTimeout(loadVoices, 500);
+  setTimeout(loadVoices, 1500);
 }
 
 // ============================================================
