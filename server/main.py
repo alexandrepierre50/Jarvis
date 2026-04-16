@@ -1,6 +1,8 @@
 import os
 import json
+import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +19,7 @@ ASSISTANT_NAME = "Jarvis"
 USER_NAME = "Senhor"
 
 def get_system_prompt():
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_hora = now.strftime("%d/%m/%Y %H:%M")
     return f"""Voce e {ASSISTANT_NAME}, um assistente virtual altamente inteligente, sofisticado e leal,
 inspirado no JARVIS do Homem de Ferro. Voce fala de forma educada, precisa e ligeiramente formal,
@@ -27,7 +29,20 @@ Voce e capaz de ajudar com qualquer tarefa: responder perguntas, dar informacoes
 fazer calculos, ajudar com tecnologia, estudos, tarefas diarias, e muito mais.
 Quando precisar de informacoes atuais, noticias, clima, cotacoes ou qualquer dado recente, use a ferramenta de busca.
 Responda sempre em portugues do Brasil, de forma concisa e direta.
-Mantenha respostas curtas quando possivel, pois serao convertidas em voz."""
+NUNCA use emojis nas respostas. As respostas serao convertidas em voz e emojis serao lidos literalmente.
+Mantenha respostas curtas quando possivel."""
+
+def remove_emojis(text: str) -> str:
+    emoji_pattern = re.compile(
+        "[\U00010000-\U0010ffff"
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
+        "\u2600-\u26FF\u2700-\u27BF]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub("", text).strip()
 
 # ============================================================
 # FERRAMENTA DE BUSCA
@@ -149,6 +164,7 @@ def chat(req: ChatRequest):
                 )
 
         reply = next((b.text for b in response.content if hasattr(b, "text")), "Nao consegui processar sua solicitacao.")
+        reply = remove_emojis(reply)
         save_message("assistant", reply)
         return {"reply": reply}
 
