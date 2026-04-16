@@ -6,13 +6,23 @@ const SERVER_URL = "https://web-production-b9c17.up.railway.app";
 // ============================================================
 // ELEMENTOS
 // ============================================================
-const chat       = document.getElementById("chat");
-const statusEl   = document.getElementById("status");
-const textInput  = document.getElementById("text-input");
-const sendBtn    = document.getElementById("send-btn");
-const micBtn     = document.getElementById("mic-btn");
-const orbCanvas  = document.getElementById("orb");
-const ctx        = orbCanvas.getContext("2d");
+const chat        = document.getElementById("chat");
+const statusEl    = document.getElementById("status");
+const textInput   = document.getElementById("text-input");
+const sendBtn     = document.getElementById("send-btn");
+const micBtn      = document.getElementById("mic-btn");
+const audioToggle = document.getElementById("audio-toggle");
+const orbCanvas   = document.getElementById("orb");
+const ctx         = orbCanvas.getContext("2d");
+
+// Carrega preferencia de audio salva
+let audioEnabled = localStorage.getItem("audioEnabled") !== "false";
+audioToggle.checked = audioEnabled;
+audioToggle.addEventListener("change", () => {
+  audioEnabled = audioToggle.checked;
+  localStorage.setItem("audioEnabled", audioEnabled);
+  if (!audioEnabled && synth) synth.cancel();
+});
 
 // ============================================================
 // ESTADO
@@ -114,6 +124,17 @@ function addMessage(sender, text, senderClass) {
 
   div.appendChild(s);
   div.appendChild(t);
+
+  // Botao de play para mensagens do Jarvis
+  if (senderClass === "sender-jarvis") {
+    const playBtn = document.createElement("button");
+    playBtn.className = "play-btn";
+    playBtn.textContent = "▶";
+    playBtn.title = "Ouvir";
+    playBtn.addEventListener("click", () => speak(text));
+    div.appendChild(playBtn);
+  }
+
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
 }
@@ -138,6 +159,8 @@ function speak(text) {
   const voices = synth.getVoices();
   const ptVoice = voices.find(v => v.lang.startsWith("pt"));
   if (ptVoice) utter.voice = ptVoice;
+
+  if (!audioEnabled) return;
 
   utter.onstart = () => {
     isSpeaking = true;
