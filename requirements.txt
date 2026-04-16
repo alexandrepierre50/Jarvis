@@ -1,0 +1,6 @@
+anthropic
+customtkinter
+SpeechRecognition
+pyttsx3
+pyaudio
+pillow

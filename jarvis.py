@@ -1,0 +1,353 @@
+import customtkinter as ctk
+import threading
+import speech_recognition as sr
+import pyttsx3
+import anthropic
+import time
+import math
+import random
+from config import ANTHROPIC_API_KEY, ASSISTANT_NAME, USER_NAME, SYSTEM_PROMPT, LANGUAGE
+
+# ============================================================
+# CONFIGURACAO VISUAL
+# ============================================================
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+# ============================================================
+# CLASSE PRINCIPAL DO JARVIS
+# ============================================================
+class JarvisApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title(f"{ASSISTANT_NAME} - Assistente Virtual")
+        self.geometry("900x700")
+        self.resizable(True, True)
+        self.configure(fg_color="#050d1a")
+
+        # Estado
+        self.is_listening = False
+        self.is_speaking = False
+        self.conversation_history = []
+
+        # Inicializa TTS
+        self.engine = pyttsx3.init()
+        self.engine.setProperty("rate", 165)
+        self.engine.setProperty("volume", 1.0)
+        self._set_voice()
+
+        # Inicializa reconhecimento de voz
+        self.recognizer = sr.Recognizer()
+        self.recognizer.energy_threshold = 300
+        self.recognizer.pause_threshold = 1.0
+
+        # Cliente Anthropic
+        self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        # Constroi interface
+        self._build_ui()
+
+        # Animacao
+        self.animation_angle = 0
+        self.pulse_size = 0
+        self.pulse_growing = True
+        self._animate()
+
+        # Mensagem de boas-vindas
+        self.after(800, self._welcome)
+
+    # --------------------------------------------------------
+    # VOZ
+    # --------------------------------------------------------
+    def _set_voice(self):
+        voices = self.engine.getProperty("voices")
+        for v in voices:
+            if "brazil" in v.name.lower() or "portuguese" in v.name.lower() or "brasil" in v.name.lower():
+                self.engine.setProperty("voice", v.id)
+                return
+        # fallback: primeira voz disponivel
+        if voices:
+            self.engine.setProperty("voice", voices[0].id)
+
+    def _speak(self, text):
+        self.is_speaking = True
+        self._set_status("Falando...", "#00bfff")
+        threading.Thread(target=self._speak_thread, args=(text,), daemon=True).start()
+
+    def _speak_thread(self, text):
+        self.engine.say(text)
+        self.engine.runAndWait()
+        self.is_speaking = False
+        self.after(0, lambda: self._set_status("Aguardando...", "#1a6b8a"))
+
+    # --------------------------------------------------------
+    # INTERFACE
+    # --------------------------------------------------------
+    def _build_ui(self):
+        # --- Titulo ---
+        title_frame = ctk.CTkFrame(self, fg_color="transparent")
+        title_frame.pack(pady=(20, 0))
+
+        ctk.CTkLabel(
+            title_frame,
+            text=f"J.A.R.V.I.S",
+            font=ctk.CTkFont(family="Courier New", size=36, weight="bold"),
+            text_color="#00bfff"
+        ).pack()
+
+        ctk.CTkLabel(
+            title_frame,
+            text="Just A Rather Very Intelligent System",
+            font=ctk.CTkFont(family="Courier New", size=11),
+            text_color="#1a6b8a"
+        ).pack()
+
+        # --- Canvas de animacao ---
+        self.canvas = ctk.CTkCanvas(
+            self,
+            width=200,
+            height=200,
+            bg="#050d1a",
+            highlightthickness=0
+        )
+        self.canvas.pack(pady=10)
+
+        # --- Status ---
+        self.status_label = ctk.CTkLabel(
+            self,
+            text="Inicializando...",
+            font=ctk.CTkFont(family="Courier New", size=13),
+            text_color="#1a6b8a"
+        )
+        self.status_label.pack(pady=(0, 5))
+
+        # --- Chat ---
+        self.chat_frame = ctk.CTkScrollableFrame(
+            self,
+            fg_color="#060f20",
+            corner_radius=12,
+            border_width=1,
+            border_color="#0a2a4a"
+        )
+        self.chat_frame.pack(fill="both", expand=True, padx=20, pady=(5, 10))
+
+        # --- Linha inferior ---
+        bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
+        bottom_frame.pack(fill="x", padx=20, pady=(0, 15))
+
+        self.text_input = ctk.CTkEntry(
+            bottom_frame,
+            placeholder_text="Digite uma mensagem ou use o microfone...",
+            font=ctk.CTkFont(family="Courier New", size=13),
+            fg_color="#060f20",
+            border_color="#0a3a6a",
+            text_color="#a0d4f5",
+            height=42,
+            corner_radius=10
+        )
+        self.text_input.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.text_input.bind("<Return>", lambda e: self._send_text())
+
+        self.send_btn = ctk.CTkButton(
+            bottom_frame,
+            text="Enviar",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            fg_color="#003a6a",
+            hover_color="#005a9a",
+            text_color="#00bfff",
+            width=80,
+            height=42,
+            corner_radius=10,
+            command=self._send_text
+        )
+        self.send_btn.pack(side="left", padx=(0, 8))
+
+        self.mic_btn = ctk.CTkButton(
+            bottom_frame,
+            text="Microfone",
+            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+            fg_color="#001a3a",
+            hover_color="#002a5a",
+            text_color="#00bfff",
+            border_width=1,
+            border_color="#0a3a6a",
+            width=100,
+            height=42,
+            corner_radius=10,
+            command=self._toggle_listen
+        )
+        self.mic_btn.pack(side="left")
+
+    def _set_status(self, text, color="#1a6b8a"):
+        self.status_label.configure(text=text, text_color=color)
+
+    def _add_message(self, sender, text, color):
+        frame = ctk.CTkFrame(self.chat_frame, fg_color="transparent")
+        frame.pack(fill="x", pady=3, padx=5)
+
+        prefix = ctk.CTkLabel(
+            frame,
+            text=f"[{sender}]",
+            font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+            text_color=color,
+            width=90,
+            anchor="w"
+        )
+        prefix.pack(side="left", padx=(0, 6))
+
+        msg = ctk.CTkLabel(
+            frame,
+            text=text,
+            font=ctk.CTkFont(family="Courier New", size=12),
+            text_color="#a0d4f5",
+            wraplength=600,
+            justify="left",
+            anchor="w"
+        )
+        msg.pack(side="left", fill="x", expand=True)
+
+        # Scroll para o final
+        self.after(100, lambda: self.chat_frame._parent_canvas.yview_moveto(1.0))
+
+    # --------------------------------------------------------
+    # ANIMACAO
+    # --------------------------------------------------------
+    def _animate(self):
+        self.canvas.delete("all")
+        cx, cy = 100, 100
+
+        # Circulos de fundo
+        for i in range(4, 0, -1):
+            r = 30 + i * 16
+            alpha_color = ["#051020", "#061528", "#071830", "#081b38"][i - 1]
+            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                    outline="#0a3a6a", width=1, fill=alpha_color)
+
+        # Arcos girando
+        for i in range(3):
+            angle_offset = self.animation_angle + i * 120
+            start = angle_offset % 360
+            self.canvas.create_arc(
+                cx - 55, cy - 55, cx + 55, cy + 55,
+                start=start, extent=90,
+                outline=["#00bfff", "#0080ff", "#004080"][i],
+                width=2, style="arc"
+            )
+
+        # Circulo central pulsante
+        if self.pulse_growing:
+            self.pulse_size += 0.5
+            if self.pulse_size >= 10:
+                self.pulse_growing = False
+        else:
+            self.pulse_size -= 0.5
+            if self.pulse_size <= 0:
+                self.pulse_growing = True
+
+        pr = 18 + self.pulse_size
+        fill_color = "#003a6a" if not self.is_listening else "#004a8a"
+        outline_color = "#00bfff" if not self.is_listening else "#00ffff"
+        self.canvas.create_oval(cx - pr, cy - pr, cx + pr, cy + pr,
+                                fill=fill_color, outline=outline_color, width=2)
+
+        # Texto central
+        center_text = "J" if not self.is_listening else "..."
+        self.canvas.create_text(cx, cy, text=center_text,
+                                fill="#00bfff",
+                                font=("Courier New", 16, "bold"))
+
+        # Pontos orbitando
+        for i in range(6):
+            angle = math.radians(self.animation_angle * 2 + i * 60)
+            ox = cx + 72 * math.cos(angle)
+            oy = cy + 72 * math.sin(angle)
+            self.canvas.create_oval(ox - 3, oy - 3, ox + 3, oy + 3,
+                                    fill="#00bfff", outline="")
+
+        self.animation_angle = (self.animation_angle + 2) % 360
+        self.after(30, self._animate)
+
+    # --------------------------------------------------------
+    # LOGICA
+    # --------------------------------------------------------
+    def _welcome(self):
+        msg = f"Sistemas online. Bom dia, {USER_NAME}. Como posso ajudar?"
+        self._add_message(ASSISTANT_NAME, msg, "#00bfff")
+        self._speak(msg)
+        self._set_status("Aguardando...", "#1a6b8a")
+
+    def _send_text(self):
+        text = self.text_input.get().strip()
+        if not text:
+            return
+        self.text_input.delete(0, "end")
+        self._process_input(text)
+
+    def _toggle_listen(self):
+        if self.is_listening:
+            return
+        threading.Thread(target=self._listen_thread, daemon=True).start()
+
+    def _listen_thread(self):
+        self.is_listening = True
+        self.after(0, lambda: self.mic_btn.configure(text="Ouvindo...", fg_color="#002a5a"))
+        self.after(0, lambda: self._set_status("Ouvindo...", "#00ffff"))
+
+        try:
+            with sr.Microphone() as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = self.recognizer.listen(source, timeout=8, phrase_time_limit=12)
+
+            self.after(0, lambda: self._set_status("Processando voz...", "#00bfff"))
+            text = self.recognizer.recognize_google(audio, language=LANGUAGE)
+            self.after(0, lambda: self._process_input(text))
+
+        except sr.WaitTimeoutError:
+            self.after(0, lambda: self._set_status("Nenhuma voz detectada.", "#ff6b35"))
+        except sr.UnknownValueError:
+            self.after(0, lambda: self._set_status("Nao entendi. Tente novamente.", "#ff6b35"))
+        except Exception as e:
+            self.after(0, lambda: self._set_status(f"Erro: {str(e)}", "#ff4444"))
+        finally:
+            self.is_listening = False
+            self.after(0, lambda: self.mic_btn.configure(text="Microfone", fg_color="#001a3a"))
+
+    def _process_input(self, text):
+        self._add_message(USER_NAME, text, "#ffaa00")
+        self._set_status("Pensando...", "#00bfff")
+
+        self.conversation_history.append({"role": "user", "content": text})
+
+        threading.Thread(target=self._get_ai_response, daemon=True).start()
+
+    def _get_ai_response(self):
+        try:
+            response = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                system=SYSTEM_PROMPT,
+                messages=self.conversation_history
+            )
+            reply = response.content[0].text
+            self.conversation_history.append({"role": "assistant", "content": reply})
+
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
+            self.after(0, lambda: self._speak(reply))
+
+        except anthropic.AuthenticationError:
+            msg = "Chave de API invalida. Verifique o arquivo config.py."
+            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro de autenticacao.", "#ff4444"))
+        except Exception as e:
+            msg = f"Erro ao contatar a IA: {str(e)}"
+            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
+
+# ============================================================
+# INICIAR
+# ============================================================
+if __name__ == "__main__":
+    app = JarvisApp()
+    app.mainloop()

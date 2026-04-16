@@ -1,0 +1,16 @@
+# Ignorar arquivo de configuracao com chave de API
+config.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Banco de dados
+*.db
+*.sqlite
+
+# Logs
+*.log
