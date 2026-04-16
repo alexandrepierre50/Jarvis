@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime
 import anthropic
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -15,9 +16,13 @@ from database import init_db, save_message, get_history, clear_history, save_dia
 ASSISTANT_NAME = "Jarvis"
 USER_NAME = "Senhor"
 
-SYSTEM_PROMPT = f"""Voce e {ASSISTANT_NAME}, um assistente virtual altamente inteligente, sofisticado e leal,
+def get_system_prompt():
+    now = datetime.now()
+    data_hora = now.strftime("%d/%m/%Y %H:%M")
+    return f"""Voce e {ASSISTANT_NAME}, um assistente virtual altamente inteligente, sofisticado e leal,
 inspirado no JARVIS do Homem de Ferro. Voce fala de forma educada, precisa e ligeiramente formal,
 sempre chamando o usuario de "{USER_NAME}".
+A data e hora atual e: {data_hora} (horario de Brasilia).
 Voce e capaz de ajudar com qualquer tarefa: responder perguntas, dar informacoes,
 fazer calculos, ajudar com tecnologia, estudos, tarefas diarias, e muito mais.
 Quando precisar de informacoes atuais, noticias, clima, cotacoes ou qualquer dado recente, use a ferramenta de busca.
@@ -99,7 +104,7 @@ def chat(req: ChatRequest):
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
-            system=SYSTEM_PROMPT,
+            system=get_system_prompt(),
             tools=[SEARCH_TOOL],
             messages=history
         )
@@ -138,7 +143,7 @@ def chat(req: ChatRequest):
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=512,
-                    system=SYSTEM_PROMPT,
+                    system=get_system_prompt(),
                     tools=[SEARCH_TOOL],
                     messages=history
                 )
