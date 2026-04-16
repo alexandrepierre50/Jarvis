@@ -115,9 +115,11 @@ def done_task(task_id: int):
 # ============================================================
 # SERVIR PWA
 # ============================================================
-pwa_path = os.path.join(os.path.dirname(__file__), "..", "pwa")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+pwa_path = os.path.abspath(os.path.join(BASE_DIR, "..", "pwa"))
+
 if os.path.exists(pwa_path):
-    app.mount("/app", StaticFiles(directory=pwa_path, html=True), name="pwa")
+    app.mount("/static", StaticFiles(directory=pwa_path), name="static")
 
 @app.get("/")
 def root():
@@ -125,6 +127,13 @@ def root():
     if os.path.exists(index):
         return FileResponse(index)
     return {"status": "Jarvis API online"}
+
+@app.get("/{filename}")
+def serve_pwa_file(filename: str):
+    filepath = os.path.join(pwa_path, filename)
+    if os.path.exists(filepath):
+        return FileResponse(filepath)
+    return {"error": "File not found"}
 
 # ============================================================
 # INICIAR
