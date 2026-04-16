@@ -155,9 +155,9 @@ def chat(req: ChatRequest):
                     query = tool_use_block.input.get("query", req.message)
                     tool_result = do_search(query)
                 elif tool_use_block.name == "save_diary":
-                    title = tool_use_block.input.get("title", "")
-                    content = tool_use_block.input.get("content", "")
-                    save_diary(title, content)
+                    diary_title = tool_use_block.input.get("title", "")
+                    diary_content = tool_use_block.input.get("content", "")
+                    save_diary(diary_title, diary_content)
                     tool_result = "Entrada salva no diario com sucesso."
                 else:
                     tool_result = "Ferramenta desconhecida."
@@ -196,7 +196,13 @@ def chat(req: ChatRequest):
         reply = next((b.text for b in response.content if hasattr(b, "text")), "Nao consegui processar sua solicitacao.")
         reply = remove_emojis(reply)
         save_message("assistant", reply)
-        return {"reply": reply}
+
+        result = {"reply": reply}
+        if "diary_title" in locals() and "diary_content" in locals():
+            result["diary_saved"] = True
+            result["diary_title"] = diary_title
+            result["diary_content"] = diary_content
+        return result
 
     except anthropic.AuthenticationError:
         raise HTTPException(status_code=401, detail="Chave de API invalida.")

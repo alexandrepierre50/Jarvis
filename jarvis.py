@@ -4,10 +4,13 @@ import speech_recognition as sr
 import math
 import tempfile
 import os
+import shutil
 import requests
+from datetime import datetime
+from tkinter import filedialog
 from elevenlabs.client import ElevenLabs
 import pygame
-from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ASSISTANT_NAME, USER_NAME, LANGUAGE
+from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ASSISTANT_NAME, USER_NAME, LANGUAGE, OBSIDIAN_VAULT
 
 SERVER_URL = "https://web-production-b9c17.up.railway.app"
 
@@ -348,7 +351,15 @@ class JarvisApp(ctk.CTk):
                 timeout=30
             )
             res.raise_for_status()
-            reply = res.json()["reply"]
+            data = res.json()
+            reply = data["reply"]
+
+            # Se o servidor salvou no diario, salva tambem no Obsidian
+            if data.get("diary_saved"):
+                self.save_to_obsidian(
+                    data.get("diary_title", ""),
+                    data.get("diary_content", text)
+                )
 
             self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
             self.after(0, lambda: self._speak(reply))
@@ -359,12 +370,58 @@ class JarvisApp(ctk.CTk):
             self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
 
     # --------------------------------------------------------
-    # DIARIO
+    # DIARIO (Obsidian)
     # --------------------------------------------------------
+    def _get_diary_folder(self):
+        folder = os.path.join(OBSIDIAN_VAULT, "Diario JARVIS")
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    def _get_today_note_path(self):
+        today = datetime.now().strftime("%Y-%m-%d")
+        return os.path.join(self._get_diary_folder(), f"{today}.md")
+
+    def save_to_obsidian(self, title, content, attachments=None):
+        note_path = self._get_today_note_path()
+        now = datetime.now().strftime("%H:%M")
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Cria ou abre o arquivo do dia
+        if not os.path.exists(note_path):
+            header = f"# Diario - {today}\n\n"
+        else:
+            header = ""
+
+        entry = f"## {now}"
+        if title:
+            entry += f" - {title}"
+        entry += f"\n\n{content}\n"
+
+        # Anexos
+        if attachments:
+            anexos_folder = os.path.join(self._get_diary_folder(), "anexos", today)
+            os.makedirs(anexos_folder, exist_ok=True)
+            entry += "\n**Anexos:**\n"
+            for src_path in attachments:
+                filename = os.path.basename(src_path)
+                dst_path = os.path.join(anexos_folder, filename)
+                shutil.copy2(src_path, dst_path)
+                rel_path = os.path.join("anexos", today, filename).replace("\\", "/")
+                ext = filename.split(".")[-1].lower()
+                if ext in ["jpg", "jpeg", "png", "gif", "bmp", "webp"]:
+                    entry += f"![[{rel_path}]]\n"
+                else:
+                    entry += f"[[{rel_path}]]\n"
+
+        entry += "\n---\n\n"
+
+        with open(note_path, "a", encoding="utf-8") as f:
+            f.write(header + entry)
+
     def _open_diary(self):
         win = ctk.CTkToplevel(self)
-        win.title("Diario do JARVIS")
-        win.geometry("600x500")
+        win.title("Diario - JARVIS")
+        win.geometry("700x600")
         win.configure(fg_color="#050d1a")
         win.grab_set()
 
@@ -379,53 +436,89 @@ class JarvisApp(ctk.CTk):
                      text_color="#1a6b8a").pack(anchor="w")
         title_input = ctk.CTkEntry(entry_frame, fg_color="#060f20", border_color="#0a3a6a",
                                    text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12))
-        title_input.pack(fill="x", pady=(2, 8))
+        title_input.pack(fill="x", pady=(2, 6))
 
-        ctk.CTkLabel(entry_frame, text="Entrada:", font=ctk.CTkFont(family="Courier New", size=11),
+        ctk.CTkLabel(entry_frame, text="Texto:", font=ctk.CTkFont(family="Courier New", size=11),
                      text_color="#1a6b8a").pack(anchor="w")
         content_input = ctk.CTkTextbox(entry_frame, fg_color="#060f20", border_color="#0a3a6a",
                                        text_color="#a0d4f5", font=ctk.CTkFont(family="Courier New", size=12),
                                        height=80)
-        content_input.pack(fill="x", pady=(2, 8))
+        content_input.pack(fill="x", pady=(2, 6))
 
-        # Entradas anteriores
-        entries_frame = ctk.CTkScrollableFrame(win, fg_color="#060f20", corner_radius=8,
-                                                border_width=1, border_color="#0a2a4a")
-        entries_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        # Anexos selecionados
+        selected_files = []
+        files_label = ctk.CTkLabel(entry_frame, text="Nenhum arquivo selecionado",
+                                   font=ctk.CTkFont(family="Courier New", size=10),
+                                   text_color="#1a6b8a")
+        files_label.pack(anchor="w")
+
+        def pick_files():
+            files = filedialog.askopenfilenames(
+                title="Selecionar arquivos",
+                filetypes=[("Todos os arquivos", "*.*"), ("Imagens", "*.jpg *.jpeg *.png *.gif"),
+                           ("PDF", "*.pdf"), ("Documentos", "*.docx *.txt")]
+            )
+            if files:
+                selected_files.clear()
+                selected_files.extend(files)
+                nomes = ", ".join(os.path.basename(f) for f in files)
+                files_label.configure(text=nomes, text_color="#00bfff")
+
+        btn_frame = ctk.CTkFrame(entry_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=6)
+
+        ctk.CTkButton(btn_frame, text="Anexar Arquivo/Foto", fg_color="#001a3a", hover_color="#002a5a",
+                      text_color="#00bfff", border_width=1, border_color="#0a3a6a",
+                      font=ctk.CTkFont(family="Courier New", size=12),
+                      command=pick_files).pack(side="left", padx=(0, 8))
 
         def save_entry():
             title = title_input.get().strip()
             content = content_input.get("1.0", "end").strip()
-            if not content:
+            if not content and not selected_files:
                 return
-            try:
-                requests.post(f"{SERVER_URL}/diary", json={"title": title, "content": content}, timeout=10)
-                title_input.delete(0, "end")
-                content_input.delete("1.0", "end")
-                load_entries()
-            except Exception as e:
-                print(f"Erro ao salvar: {e}")
+            self.save_to_obsidian(title, content or "(sem texto)", selected_files or None)
+            title_input.delete(0, "end")
+            content_input.delete("1.0", "end")
+            selected_files.clear()
+            files_label.configure(text="Nenhum arquivo selecionado", text_color="#1a6b8a")
+            load_entries()
+
+        ctk.CTkButton(btn_frame, text="Salvar no Obsidian", fg_color="#003a6a", hover_color="#005a9a",
+                      text_color="#00bfff", font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+                      command=save_entry).pack(side="left")
+
+        # Entradas existentes
+        ctk.CTkLabel(win, text="Entradas recentes:", font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#1a6b8a").pack(anchor="w", padx=16)
+
+        entries_frame = ctk.CTkScrollableFrame(win, fg_color="#060f20", corner_radius=8,
+                                                border_width=1, border_color="#0a2a4a")
+        entries_frame.pack(fill="both", expand=True, padx=16, pady=(4, 16))
 
         def load_entries():
             for w in entries_frame.winfo_children():
                 w.destroy()
+            diary_folder = self._get_diary_folder()
             try:
-                res = requests.get(f"{SERVER_URL}/diary", timeout=10)
-                entries = res.json()
-                for e in entries:
-                    f = ctk.CTkFrame(entries_frame, fg_color="#070f20", corner_radius=6)
-                    f.pack(fill="x", pady=3, padx=4)
-                    header = f"{e['timestamp'][:10]}  {e['title'] or '(sem titulo)'}"
-                    ctk.CTkLabel(f, text=header, font=ctk.CTkFont(family="Courier New", size=10, weight="bold"),
-                                 text_color="#00bfff").pack(anchor="w", padx=8, pady=(4, 0))
-                    ctk.CTkLabel(f, text=e["content"], font=ctk.CTkFont(family="Courier New", size=11),
-                                 text_color="#a0d4f5", wraplength=500, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
-            except Exception as e:
-                ctk.CTkLabel(entries_frame, text="Erro ao carregar entradas.", text_color="#ff4444").pack()
+                files = sorted(
+                    [f for f in os.listdir(diary_folder) if f.endswith(".md")],
+                    reverse=True
+                )[:10]
+                for fname in files:
+                    fpath = os.path.join(diary_folder, fname)
+                    date = fname.replace(".md", "")
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        preview = f.read()[:300]
 
-        ctk.CTkButton(entry_frame, text="Salvar Entrada", fg_color="#003a6a", hover_color="#005a9a",
-                      text_color="#00bfff", font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
-                      command=save_entry).pack(fill="x")
+                    card = ctk.CTkFrame(entries_frame, fg_color="#070f20", corner_radius=6)
+                    card.pack(fill="x", pady=3, padx=4)
+                    ctk.CTkLabel(card, text=date, font=ctk.CTkFont(family="Courier New", size=11, weight="bold"),
+                                 text_color="#00bfff").pack(anchor="w", padx=8, pady=(4, 0))
+                    ctk.CTkLabel(card, text=preview + "...", font=ctk.CTkFont(family="Courier New", size=10),
+                                 text_color="#a0d4f5", wraplength=580, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
+            except Exception as e:
+                ctk.CTkLabel(entries_frame, text="Nenhuma entrada encontrada.", text_color="#1a6b8a").pack(pady=10)
 
         load_entries()
 
