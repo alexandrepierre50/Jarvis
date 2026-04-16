@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import anthropic
@@ -10,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from ddgs import DDGS
-from database import init_db, save_message, get_history, clear_history, save_diary, get_diary, save_task, get_tasks, complete_task
+from database import init_db, save_message, get_history, clear_history, save_diary, get_diary, save_task, get_tasks, complete_task, save_memory, get_memory, get_message_count
 
 # ============================================================
 # CONFIGURACAO
@@ -21,6 +22,8 @@ USER_NAME = "Xande"
 def get_system_prompt():
     now = datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_hora = now.strftime("%d/%m/%Y %H:%M")
+    memory = get_memory()
+    memory_section = f"\n\nMEMÓRIA SOBRE {USER_NAME}:\n{memory}" if memory else ""
     return f"""Você é {ASSISTANT_NAME}, um assistente virtual altamente inteligente, sofisticado e leal,
 inspirado no J.A.R.V.I.S do Homem de Ferro. Você fala de forma educada, precisa e ligeiramente formal,
 sempre chamando o usuário de "{USER_NAME}".
@@ -31,7 +34,28 @@ Quando precisar de informações atuais, notícias, clima, cotações ou qualque
 SEMPRE escreva em português do Brasil correto, com todos os acentos, cedilhas e til (ç, ã, õ, é, á, etc.).
 NUNCA omita acentuação. Use gramática formal e correta.
 NUNCA use emojis nas respostas. As respostas serão convertidas em voz e emojis serão lidos literalmente.
-Mantenha respostas curtas quando possível."""
+Mantenha respostas curtas quando possível.{memory_section}"""
+
+def _update_memory():
+    try:
+        history = get_history(limit=40)
+        if not history:
+            return
+        mem_client = anthropic.Anthropic()
+        response = mem_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            system=f"""Você é um sistema de memória. Analise o histórico de conversas e extraia
+fatos importantes sobre o usuário chamado {USER_NAME}: preferências, hábitos, objetivos,
+informações pessoais, projetos em andamento, etc.
+Seja conciso. Liste apenas fatos relevantes em bullets. Máximo 15 itens.
+Responda em português do Brasil com acentuação correta.""",
+            messages=[{"role": "user", "content": f"Histórico:\n{json.dumps(history, ensure_ascii=False)}"}]
+        )
+        memory_text = response.content[0].text
+        save_memory(memory_text)
+    except Exception as e:
+        print(f"Erro ao atualizar memória: {e}")
 
 def remove_emojis(text: str) -> str:
     emoji_pattern = re.compile(
@@ -203,6 +227,11 @@ def chat(req: ChatRequest):
             result["diary_saved"] = True
             result["diary_title"] = diary_title
             result["diary_content"] = diary_content
+
+        # Atualiza memoria a cada 10 mensagens
+        if get_message_count() % 10 == 0:
+            threading.Thread(target=_update_memory, daemon=True).start()
+
         return result
 
     except anthropic.AuthenticationError:

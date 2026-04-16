@@ -8,6 +8,7 @@ import shutil
 import requests
 from datetime import datetime
 from tkinter import filedialog
+from PIL import ImageGrab
 from elevenlabs.client import ElevenLabs
 import pygame
 from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ASSISTANT_NAME, USER_NAME, LANGUAGE, OBSIDIAN_VAULT
@@ -43,7 +44,8 @@ class JarvisApp(ctk.CTk):
         # Inicializa reconhecimento de voz
         self.recognizer = sr.Recognizer()
         self.recognizer.energy_threshold = 300
-        self.recognizer.pause_threshold = 1.0
+        self.recognizer.pause_threshold = 2.5
+        self.recognizer.non_speaking_duration = 2.0
 
         # Constroi interface
         self._build_ui()
@@ -471,6 +473,42 @@ class JarvisApp(ctk.CTk):
                       text_color="#00bfff", border_width=1, border_color="#0a3a6a",
                       font=ctk.CTkFont(family="Courier New", size=12),
                       command=pick_files).pack(side="left", padx=(0, 8))
+
+        # Botao de captura de tela
+        countdown_label = ctk.CTkLabel(btn_frame, text="",
+                                       font=ctk.CTkFont(family="Courier New", size=12),
+                                       text_color="#ffaa00")
+        countdown_label.pack(side="left", padx=(0, 8))
+
+        def capture_screen():
+            def do_capture():
+                for i in range(3, 0, -1):
+                    win.after(0, lambda n=i: countdown_label.configure(text=f"Capturando em {n}..."))
+                    import time
+                    time.sleep(1)
+                win.after(0, win.withdraw)
+                time.sleep(0.3)
+                screenshot = ImageGrab.grab()
+                win.after(0, win.deiconify)
+                now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                tmp_dir = tempfile.gettempdir()
+                tmp_path = os.path.join(tmp_dir, f"jarvis_print_{now_str}.png")
+                screenshot.save(tmp_path)
+                selected_files.append(tmp_path)
+                nome = os.path.basename(tmp_path)
+                nomes_atuais = files_label.cget("text")
+                if nomes_atuais == "Nenhum arquivo selecionado":
+                    win.after(0, lambda: files_label.configure(text=nome, text_color="#00bfff"))
+                else:
+                    win.after(0, lambda: files_label.configure(text=f"{nomes_atuais}, {nome}", text_color="#00bfff"))
+                win.after(0, lambda: countdown_label.configure(text=""))
+
+            threading.Thread(target=do_capture, daemon=True).start()
+
+        ctk.CTkButton(btn_frame, text="Capturar Tela", fg_color="#001a3a", hover_color="#002a5a",
+                      text_color="#00bfff", border_width=1, border_color="#0a3a6a",
+                      font=ctk.CTkFont(family="Courier New", size=12),
+                      command=capture_screen).pack(side="left", padx=(0, 8))
 
         def save_entry():
             title = title_input.get().strip()

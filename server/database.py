@@ -16,6 +16,13 @@ def init_db():
         )
     """)
     c.execute("""
+        CREATE TABLE IF NOT EXISTS memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS diary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,
@@ -57,6 +64,31 @@ def clear_history():
     c.execute("DELETE FROM messages")
     conn.commit()
     conn.close()
+
+def get_message_count():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM messages")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def save_memory(content):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM memory")
+    c.execute("INSERT INTO memory (content, updated_at) VALUES (?, ?)",
+              (content, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_memory():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT content FROM memory ORDER BY id DESC LIMIT 1")
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else ""
 
 def save_diary(title, content):
     conn = sqlite3.connect(DB_PATH)
