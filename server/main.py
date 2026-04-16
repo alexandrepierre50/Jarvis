@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from database import init_db, save_message, get_history, clear_history, save_diary, get_diary, save_task, get_tasks, complete_task
 
 # ============================================================
