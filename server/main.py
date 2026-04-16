@@ -105,30 +105,44 @@ def chat(req: ChatRequest):
 
         # Se Claude quer buscar na internet
         if response.stop_reason == "tool_use":
-            tool_use = next(b for b in response.content if b.type == "tool_use")
-            query = tool_use.input["query"]
-            search_result = do_search(query)
+            tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
 
-            # Segunda chamada com o resultado da busca
-            history.append({"role": "assistant", "content": response.content})
-            history.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": search_result
-                }]
-            })
+            if tool_use_block:
+                query = tool_use_block.input.get("query", req.message)
+                search_result = do_search(query)
 
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=512,
-                system=SYSTEM_PROMPT,
-                tools=[SEARCH_TOOL],
-                messages=history
-            )
+                # Monta o historico com o resultado da busca
+                assistant_content = []
+                for b in response.content:
+                    if b.type == "text":
+                        assistant_content.append({"type": "text", "text": b.text})
+                    elif b.type == "tool_use":
+                        assistant_content.append({
+                            "type": "tool_use",
+                            "id": b.id,
+                            "name": b.name,
+                            "input": b.input
+                        })
 
-        reply = next(b.text for b in response.content if hasattr(b, "text"))
+                history.append({"role": "assistant", "content": assistant_content})
+                history.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_block.id,
+                        "content": search_result
+                    }]
+                })
+
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=512,
+                    system=SYSTEM_PROMPT,
+                    tools=[SEARCH_TOOL],
+                    messages=history
+                )
+
+        reply = next((b.text for b in response.content if hasattr(b, "text")), "Nao consegui processar sua solicitacao.")
         save_message("assistant", reply)
         return {"reply": reply}
 
