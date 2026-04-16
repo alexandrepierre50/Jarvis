@@ -69,7 +69,9 @@ app.add_middleware(
 
 init_db()
 
-client = anthropic.Anthropic()  # usa ANTHROPIC_API_KEY do ambiente automaticamente
+_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+print(f"[JARVIS] API key encontrada: {'sim' if _api_key else 'NAO'} | primeiros chars: {_api_key[:8] if _api_key else 'vazio'}")
+client = anthropic.Anthropic(api_key=_api_key if _api_key else None)
 
 # ============================================================
 # MODELOS
