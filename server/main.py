@@ -153,10 +153,42 @@ class TaskRequest(BaseModel):
 # ============================================================
 # ROTAS - CHAT
 # ============================================================
+def sanitize_history(history):
+    """Remove entradas corrompidas: tool_use sem tool_result correspondente."""
+    clean = []
+    i = 0
+    while i < len(history):
+        msg = history[i]
+        content = msg.get("content", "")
+        # Detecta se content e lista com tool_use
+        has_tool_use = isinstance(content, list) and any(
+            (b.get("type") == "tool_use" if isinstance(b, dict) else getattr(b, "type", None) == "tool_use")
+            for b in content
+        )
+        if has_tool_use:
+            # So inclui se proximo mensagem tem tool_result
+            next_msg = history[i + 1] if i + 1 < len(history) else None
+            next_content = next_msg.get("content", "") if next_msg else ""
+            has_result = isinstance(next_content, list) and any(
+                (b.get("type") == "tool_result" if isinstance(b, dict) else getattr(b, "type", None) == "tool_result")
+                for b in next_content
+            )
+            if has_result:
+                clean.append(msg)
+                clean.append(next_msg)
+                i += 2
+            else:
+                i += 1  # descarta o tool_use orfao
+        else:
+            clean.append(msg)
+            i += 1
+    return clean
+
+
 @app.post("/chat")
 def chat(req: ChatRequest):
     save_message("user", req.message)
-    history = get_history(limit=20)
+    history = sanitize_history(get_history(limit=20))
 
     try:
         tools = [SEARCH_TOOL, DIARY_TOOL]
