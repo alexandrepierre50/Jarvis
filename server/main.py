@@ -161,10 +161,21 @@ def chat(req: ChatRequest):
     try:
         tools = [SEARCH_TOOL, DIARY_TOOL]
 
+        # Mais tokens para resumos, flashcards e modo estudo (mensagens longas)
+        msg_len = len(req.message)
+        if msg_len > 8000:
+            max_tok = 8192   # resumo/flashcard de PDF grande
+        elif msg_len > 2000:
+            max_tok = 4096   # modo estudo / perguntas com contexto
+        elif msg_len > 500:
+            max_tok = 2048   # respostas medias
+        else:
+            max_tok = 1024   # chat normal
+
         # Primeira chamada
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=512,
+            max_tokens=max_tok,
             system=get_system_prompt(),
             tools=tools,
             messages=history
@@ -212,7 +223,7 @@ def chat(req: ChatRequest):
 
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
-                    max_tokens=512,
+                    max_tokens=max_tok,
                     system=get_system_prompt(),
                     tools=tools,
                     messages=history

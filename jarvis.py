@@ -38,6 +38,7 @@ class JarvisApp(ctk.CTk):
         # Estado
         self.is_listening = False
         self.is_speaking = False
+        self.study_pdf = None  # (filename, text) quando em modo estudo
 
         # Inicializa ElevenLabs
         self.eleven = ElevenLabs(api_key=ELEVENLABS_API_KEY)
@@ -134,6 +135,32 @@ class JarvisApp(ctk.CTk):
             text_color="#1a6b8a"
         )
         self.status_label.pack(pady=(0, 5))
+
+        # --- Banner de estudo (oculto por padrao) ---
+        self.study_banner = ctk.CTkFrame(self, fg_color="#0a1a00", corner_radius=8,
+                                         border_width=1, border_color="#00ff88")
+        # nao faz pack aqui — aparece apenas no modo estudo
+
+        banner_inner = ctk.CTkFrame(self.study_banner, fg_color="transparent")
+        banner_inner.pack(fill="x", padx=12, pady=6)
+
+        self.study_label = ctk.CTkLabel(
+            banner_inner,
+            text="",
+            font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+            text_color="#00ff88"
+        )
+        self.study_label.pack(side="left")
+
+        ctk.CTkButton(
+            banner_inner,
+            text="Encerrar Estudo",
+            font=ctk.CTkFont(family="Courier New", size=11),
+            fg_color="#1a3300", hover_color="#2a5500",
+            text_color="#00ff88", border_width=1, border_color="#00ff88",
+            width=120, height=28, corner_radius=6,
+            command=self._stop_study_mode
+        ).pack(side="right")
 
         # --- Chat ---
         self.chat_frame = ctk.CTkScrollableFrame(
@@ -430,14 +457,20 @@ class JarvisApp(ctk.CTk):
             return
         self._add_message(USER_NAME, text, "#ffaa00")
         self._set_status("Pensando...", "#00bfff")
-        threading.Thread(target=self._get_ai_response, args=(text,), daemon=True).start()
+        # Injeta contexto do PDF se modo estudo ativo
+        if self.study_pdf:
+            filename, pdf_text = self.study_pdf
+            enriched = f"[Contexto: estamos estudando o PDF '{filename}']\n\nPergunta: {text}\n\nConteúdo do PDF:\n{pdf_text[:20000]}"
+            threading.Thread(target=self._get_ai_response, args=(enriched,), daemon=True).start()
+        else:
+            threading.Thread(target=self._get_ai_response, args=(text,), daemon=True).start()
 
     def _get_ai_response(self, text):
         try:
             res = requests.post(
                 f"{SERVER_URL}/chat",
                 json={"message": text},
-                timeout=30
+                timeout=120
             )
             res.raise_for_status()
             data = res.json()
@@ -1005,7 +1038,7 @@ Retorne a análise em markdown."""
             self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
 
     # --------------------------------------------------------
-    # PDF
+    # PDF / MODO ESTUDO
     # --------------------------------------------------------
     def _open_pdf(self):
         path = filedialog.askopenfilename(
@@ -1016,13 +1049,13 @@ Retorne a análise em markdown."""
             return
 
         self._set_status("Lendo PDF...", "#00bfff")
-        threading.Thread(target=self._process_pdf, args=(path,), daemon=True).start()
+        threading.Thread(target=self._extract_pdf_then_ask, args=(path,), daemon=True).start()
 
-    def _process_pdf(self, path):
+    def _extract_pdf_then_ask(self, path):
         try:
             text = ""
             with pdfplumber.open(path) as pdf:
-                for page in pdf.pages[:20]:  # limita a 20 paginas
+                for page in pdf.pages[:60]:
                     text += page.extract_text() or ""
 
             if not text.strip():
@@ -1030,26 +1063,88 @@ Retorne a análise em markdown."""
                 return
 
             filename = os.path.basename(path)
-            self.after(0, lambda: self._add_message(USER_NAME, f"[PDF enviado: {filename}]", "#ffaa00"))
-
-            # Manda para o servidor com instrucao
-            prompt = f"Analisei o seguinte PDF chamado '{filename}'. Por favor, faça um resumo detalhado do conteúdo, destacando os pontos principais:\n\n{text[:8000]}"
-
-            self._set_status("JARVIS analisando PDF...", "#00bfff")
-            res = requests.post(
-                f"{SERVER_URL}/chat",
-                json={"message": prompt},
-                timeout=60
-            )
-            res.raise_for_status()
-            reply = res.json()["reply"]
-
-            self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
-            self.after(0, lambda: self._speak(reply))
+            self.after(0, lambda: self._show_pdf_modal(filename, text))
 
         except Exception as e:
-            self.after(0, lambda: self._add_message("ERRO", f"Erro ao processar PDF: {str(e)}", "#ff4444"))
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao ler PDF: {str(e)}", "#ff4444"))
             self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
+    def _show_pdf_modal(self, filename, text):
+        win = ctk.CTkToplevel(self)
+        win.title("PDF carregado")
+        win.geometry("420x220")
+        win.configure(fg_color="#050d1a")
+        win.grab_set()
+
+        ctk.CTkLabel(win, text=filename,
+                     font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+                     text_color="#00bfff", wraplength=380).pack(pady=(18, 4), padx=20)
+
+        pages_info = f"{len(text)} caracteres extraidos"
+        ctk.CTkLabel(win, text=pages_info,
+                     font=ctk.CTkFont(family="Courier New", size=10),
+                     text_color="#1a6b8a").pack(pady=(0, 16))
+
+        ctk.CTkLabel(win, text="O que voce quer fazer com este PDF?",
+                     font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#a0d4f5").pack(pady=(0, 12))
+
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20)
+
+        def resumir():
+            win.destroy()
+            self._add_message(USER_NAME, f"[PDF: {filename}]", "#ffaa00")
+            threading.Thread(target=self._process_pdf_summary, args=(filename, text), daemon=True).start()
+
+        def estudar():
+            win.destroy()
+            self._start_study_mode(filename, text)
+
+        ctk.CTkButton(btn_frame, text="Resumir",
+                      font=ctk.CTkFont(family="Courier New", size=13),
+                      fg_color="#003a6a", hover_color="#005a9a",
+                      text_color="#00bfff", height=42, corner_radius=10,
+                      command=resumir).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        ctk.CTkButton(btn_frame, text="Modo Estudo",
+                      font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
+                      fg_color="#0a2a00", hover_color="#1a4a00",
+                      text_color="#00ff88", border_width=1, border_color="#00ff88",
+                      height=42, corner_radius=10,
+                      command=estudar).pack(side="left", fill="x", expand=True)
+
+    def _process_pdf_summary(self, filename, text):
+        try:
+            prompt = f"Analisei o seguinte PDF chamado '{filename}'. Por favor, faca um resumo detalhado do conteudo, destacando os pontos principais:\n\n{text[:20000]}"
+            self.after(0, lambda: self._set_status("JARVIS analisando PDF...", "#00bfff"))
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=120)
+            res.raise_for_status()
+            reply = res.json()["reply"]
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
+            self.after(0, lambda: self._speak(reply))
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", f"Erro: {str(e)}", "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
+    def _start_study_mode(self, filename, text):
+        self.study_pdf = (filename, text)
+        short_name = filename if len(filename) <= 40 else filename[:37] + "..."
+        self.study_label.configure(text=f"Modo Estudo ativo: {short_name}")
+        self.study_banner.pack(fill="x", padx=20, pady=(0, 6), before=self.chat_frame)
+
+        intro = f"[Modo Estudo: {filename}]"
+        self._add_message(USER_NAME, intro, "#00ff88")
+
+        prompt = (f"Acabei de carregar o PDF '{filename}' para estudarmos juntos. "
+                  f"Aqui está o conteúdo completo:\n\n{text[:20000]}\n\n"
+                  f"Apresente-se brevemente como meu tutor para este material e me diga o tema e estrutura principal do documento.")
+        threading.Thread(target=self._get_ai_response, args=(prompt,), daemon=True).start()
+
+    def _stop_study_mode(self):
+        self.study_pdf = None
+        self.study_banner.pack_forget()
+        self._add_message(ASSISTANT_NAME, "Modo de estudo encerrado.", "#00ff88")
 
 
 # ============================================================
