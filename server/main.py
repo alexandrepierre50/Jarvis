@@ -153,35 +153,59 @@ class TaskRequest(BaseModel):
 # ============================================================
 # ROTAS - CHAT
 # ============================================================
+def _parse_content(content):
+    """Normaliza content: tenta parsear JSON string como lista."""
+    if isinstance(content, list):
+        return content
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return parsed
+            except (ValueError, TypeError):
+                pass
+    return content
+
+
+def _has_block_type(content, block_type):
+    parsed = _parse_content(content)
+    if not isinstance(parsed, list):
+        return False
+    return any(
+        (b.get("type") == block_type if isinstance(b, dict) else getattr(b, "type", None) == block_type)
+        for b in parsed
+    )
+
+
 def sanitize_history(history):
-    """Remove entradas corrompidas: tool_use sem tool_result correspondente."""
+    """Remove tool_use sem tool_result correspondente e papeis consecutivos duplicados."""
     clean = []
     i = 0
     while i < len(history):
         msg = history[i]
         content = msg.get("content", "")
-        # Detecta se content e lista com tool_use
-        has_tool_use = isinstance(content, list) and any(
-            (b.get("type") == "tool_use" if isinstance(b, dict) else getattr(b, "type", None) == "tool_use")
-            for b in content
-        )
-        if has_tool_use:
-            # So inclui se proximo mensagem tem tool_result
+
+        if _has_block_type(content, "tool_use"):
             next_msg = history[i + 1] if i + 1 < len(history) else None
             next_content = next_msg.get("content", "") if next_msg else ""
-            has_result = isinstance(next_content, list) and any(
-                (b.get("type") == "tool_result" if isinstance(b, dict) else getattr(b, "type", None) == "tool_result")
-                for b in next_content
-            )
-            if has_result:
+            if next_msg and _has_block_type(next_content, "tool_result"):
                 clean.append(msg)
                 clean.append(next_msg)
                 i += 2
             else:
-                i += 1  # descarta o tool_use orfao
-        else:
-            clean.append(msg)
+                i += 1  # descarta tool_use orfao
+        elif _has_block_type(content, "tool_result"):
+            # tool_result sem tool_use anterior — descarta
             i += 1
+        else:
+            # Evita dois roles iguais consecutivos
+            if clean and clean[-1]["role"] == msg["role"]:
+                i += 1
+            else:
+                clean.append(msg)
+                i += 1
     return clean
 
 

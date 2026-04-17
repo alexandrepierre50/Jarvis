@@ -11,9 +11,11 @@ from tkinter import filedialog
 from PIL import ImageGrab
 import pdfplumber
 from youtube_transcript_api import YouTubeTranscriptApi
-from elevenlabs.client import ElevenLabs
 import pygame
-from config import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ASSISTANT_NAME, USER_NAME, LANGUAGE, OBSIDIAN_VAULT
+import asyncio
+import edge_tts
+from config import ASSISTANT_NAME, USER_NAME, LANGUAGE, OBSIDIAN_VAULT
+from skill_petrobras import PetrobrasStudy, QuizWindow
 
 SERVER_URL = "https://web-production-b9c17.up.railway.app"
 
@@ -39,9 +41,16 @@ class JarvisApp(ctk.CTk):
         self.is_listening = False
         self.is_speaking = False
         self.study_pdf = None  # (filename, text) quando em modo estudo
+        self.obsidian_vault = OBSIDIAN_VAULT
+        self.petrobras = PetrobrasStudy(self)
+        self.quiz = QuizWindow(self)
 
-        # Inicializa ElevenLabs
-        self.eleven = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        # Vozes disponiveis (edge-tts, gratuito)
+        self.voices = {
+            "Antonio (BR Masculino)": "pt-BR-AntonioNeural",
+            "Francisca (BR Feminino)": "pt-BR-FranciscaNeural",
+        }
+        self.current_voice = "pt-BR-AntonioNeural"
         pygame.mixer.init()
 
         # Inicializa reconhecimento de voz
@@ -65,10 +74,25 @@ class JarvisApp(ctk.CTk):
     # --------------------------------------------------------
     # VOZ
     # --------------------------------------------------------
+    def _clean_for_speech(self, text):
+        import re
+        text = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)  # **bold** e *italic*
+        text = re.sub(r'#{1,6}\s*', '', text)                # # titulos
+        text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)  # listas
+        text = re.sub(r'`{1,3}.*?`{1,3}', '', text)         # `codigo`
+        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)  # [link](url)
+        text = re.sub(r'_{1,2}(.*?)_{1,2}', r'\1', text)    # _italico_
+        text = re.sub(r'\n{2,}', '. ', text)                 # quebras de linha
+        text = re.sub(r'\n', ' ', text)
+        text = re.sub(r'\s{2,}', ' ', text)
+        return text.strip()
+
     def _speak(self, text):
-        # ElevenLabs falha silenciosamente com textos muito longos — trunca em 500 chars
+        if not text or not text.strip():
+            return
+        text = self._clean_for_speech(text)
+        # Trunca em 500 chars na primeira frase completa
         if len(text) > 500:
-            # Fala apenas ate o fim da primeira frase completa dentro do limite
             trunc = text[:500]
             last_period = max(trunc.rfind("."), trunc.rfind("!"), trunc.rfind("?"))
             text = trunc[:last_period + 1] if last_period > 100 else trunc
@@ -77,29 +101,32 @@ class JarvisApp(ctk.CTk):
         threading.Thread(target=self._speak_thread, args=(text,), daemon=True).start()
 
     def _speak_thread(self, text):
+        tmp_path = None
         try:
-            audio = self.eleven.text_to_speech.convert(
-                voice_id=ELEVENLABS_VOICE_ID,
-                text=text,
-                model_id="eleven_multilingual_v2"
-            )
-            # Salva em arquivo temporario e toca
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                for chunk in audio:
-                    f.write(chunk)
                 tmp_path = f.name
+
+            asyncio.run(self._tts_to_file(text, tmp_path))
 
             pygame.mixer.music.load(tmp_path)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 pygame.time.Clock().tick(10)
             pygame.mixer.music.unload()
-            os.unlink(tmp_path)
         except Exception as e:
             print(f"Erro TTS: {e}")
         finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
             self.is_speaking = False
             self.after(0, lambda: self._set_status("Aguardando...", "#1a6b8a"))
+
+    async def _tts_to_file(self, text, path):
+        communicate = edge_tts.Communicate(text, self.current_voice)
+        await communicate.save(path)
 
     # --------------------------------------------------------
     # INTERFACE
@@ -189,8 +216,8 @@ class JarvisApp(ctk.CTk):
             fg_color="#060f20",
             border_color="#0a3a6a",
             text_color="#a0d4f5",
-            height=42,
-            corner_radius=10
+            height=46,
+            corner_radius=12
         )
         self.text_input.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.text_input.bind("<Return>", lambda e: self._send_text())
@@ -199,95 +226,105 @@ class JarvisApp(ctk.CTk):
             bottom_frame,
             text="Enviar",
             font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            fg_color="#003a6a",
-            hover_color="#005a9a",
+            fg_color="#003a6a", hover_color="#005a9a",
             text_color="#00bfff",
-            width=80,
-            height=42,
-            corner_radius=10,
+            width=80, height=46, corner_radius=12,
             command=self._send_text
         )
         self.send_btn.pack(side="left", padx=(0, 8))
 
         self.mic_btn = ctk.CTkButton(
             bottom_frame,
-            text="Microfone",
-            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            fg_color="#001a3a",
-            hover_color="#002a5a",
+            text="🎤",
+            font=ctk.CTkFont(size=18),
+            fg_color="#001a3a", hover_color="#002a5a",
             text_color="#00bfff",
-            border_width=1,
-            border_color="#0a3a6a",
-            width=100,
-            height=42,
-            corner_radius=10,
+            border_width=1, border_color="#0a3a6a",
+            width=46, height=46, corner_radius=12,
             command=self._toggle_listen
         )
         self.mic_btn.pack(side="left", padx=(0, 8))
 
-        self.diary_btn = ctk.CTkButton(
+        self.menu_btn = ctk.CTkButton(
             bottom_frame,
-            text="Diario",
-            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            fg_color="#001a3a",
-            hover_color="#002a5a",
+            text="⊕",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            fg_color="#001a3a", hover_color="#002a5a",
             text_color="#00bfff",
-            border_width=1,
-            border_color="#0a3a6a",
-            width=80,
-            height=42,
-            corner_radius=10,
-            command=self._open_diary
+            border_width=1, border_color="#0a3a6a",
+            width=46, height=46, corner_radius=12,
+            command=self._toggle_menu
         )
-        self.diary_btn.pack(side="left", padx=(0, 8))
+        self.menu_btn.pack(side="left")
 
-        self.pdf_btn = ctk.CTkButton(
-            bottom_frame,
-            text="PDF",
-            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            fg_color="#001a3a",
-            hover_color="#002a5a",
-            text_color="#00bfff",
+        # --- Menu flutuante (oculto por padrao) ---
+        self._menu_aberto = False
+        self.menu_popup = ctk.CTkFrame(
+            self,
+            fg_color="#070f20",
+            corner_radius=14,
             border_width=1,
-            border_color="#0a3a6a",
-            width=60,
-            height=42,
-            corner_radius=10,
-            command=self._open_pdf
+            border_color="#0a3a6a"
         )
-        self.pdf_btn.pack(side="left", padx=(0, 8))
 
-        self.yt_btn = ctk.CTkButton(
-            bottom_frame,
-            text="YouTube",
-            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            fg_color="#001a3a",
-            hover_color="#002a5a",
-            text_color="#00bfff",
-            border_width=1,
-            border_color="#0a3a6a",
-            width=90,
-            height=42,
-            corner_radius=10,
-            command=self._open_youtube
-        )
-        self.yt_btn.pack(side="left", padx=(0, 8))
+        itens = [
+            ("📓  Diario",    "#001a3a", "#0a3a6a", "#a0d4f5", self._open_diary),
+            ("🛢   Petrobras", "#003a00", "#00ff88", "#00ff88", self.petrobras.open_window),
+        ]
 
-        self.skills_btn = ctk.CTkButton(
-            bottom_frame,
-            text="Skills",
-            font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-            fg_color="#1a0030",
-            hover_color="#2a0050",
-            text_color="#bf7fff",
-            border_width=1,
-            border_color="#3a0a6a",
-            width=70,
-            height=42,
-            corner_radius=10,
-            command=self._open_skills
+        for i, (label, fg, borda, tc, cmd) in enumerate(itens):
+            row, col = divmod(i, 2)
+            btn = ctk.CTkButton(
+                self.menu_popup,
+                text=label,
+                font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
+                fg_color=fg, hover_color="#004a8a",
+                text_color=tc,
+                border_width=1, border_color=borda,
+                height=44, corner_radius=10,
+                anchor="w",
+                command=lambda c=cmd: [self._fechar_menu(), c()]
+            )
+            btn.grid(row=row, column=col, padx=8, pady=5, sticky="ew")
+
+        self.menu_popup.grid_columnconfigure(0, weight=1)
+        self.menu_popup.grid_columnconfigure(1, weight=1)
+
+        # Seletor de voz discreto dentro do popup
+        voice_row = ctk.CTkFrame(self.menu_popup, fg_color="transparent")
+        voice_row.grid(row=3, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="ew")
+
+        ctk.CTkLabel(voice_row, text="Voz:",
+                     font=ctk.CTkFont(family="Courier New", size=11),
+                     text_color="#1a6b8a").pack(side="left", padx=(4, 6))
+
+        self.voice_menu = ctk.CTkOptionMenu(
+            voice_row,
+            values=list(self.voices.keys()),
+            font=ctk.CTkFont(family="Courier New", size=11),
+            fg_color="#0a0a2a", button_color="#003a6a",
+            text_color="#a0d4f5",
+            height=32, corner_radius=8,
+            command=self._change_voice
         )
-        self.skills_btn.pack(side="left")
+        self.voice_menu.pack(side="left", fill="x", expand=True)
+
+    def _change_voice(self, choice):
+        self.current_voice = self.voices[choice]
+
+    def _toggle_menu(self):
+        if self._menu_aberto:
+            self._fechar_menu()
+        else:
+            self.menu_popup.place(relx=1.0, rely=1.0, anchor="se", x=-20, y=-70)
+            self.menu_popup.lift()
+            self._menu_aberto = True
+            self.menu_btn.configure(text="✕")
+
+    def _fechar_menu(self):
+        self.menu_popup.place_forget()
+        self._menu_aberto = False
+        self.menu_btn.configure(text="⊕")
 
     def _set_status(self, text, color="#1a6b8a"):
         self.status_label.configure(text=text, text_color=color)
@@ -456,17 +493,280 @@ class JarvisApp(ctk.CTk):
                     threading.Thread(target=self._run_skill_research, args=(topic,), daemon=True).start()
                     return True
 
+        # Obsidian — ler nota
+        for prefix in ["ler nota ", "ler ", "abrir nota ", "mostrar nota ", "ver nota "]:
+            if t.startswith(prefix):
+                termo = text[len(prefix):].strip()
+                if termo:
+                    threading.Thread(target=self._vault_read, args=(termo,), daemon=True).start()
+                    return True
+
+        # Obsidian — marcar status
+        for status, emoji in [("dominado", "🟢 dominado"), ("revisar", "🟡 revisar"), ("pendente", "🔴 pendente")]:
+            if f"marcar" in t and status in t:
+                # extrai nome da nota do comando
+                termo = t.replace("marcar", "").replace(f"como {status}", "").replace(status, "").strip()
+                if termo:
+                    threading.Thread(target=self._vault_set_status, args=(termo, emoji), daemon=True).start()
+                    return True
+
+        # Obsidian — listar notas de uma pasta
+        for prefix in ["listar notas de ", "listar ", "notas de "]:
+            if t.startswith(prefix):
+                pasta = text[len(prefix):].strip()
+                threading.Thread(target=self._vault_list, args=(pasta,), daemon=True).start()
+                return True
+
+        # Obsidian — adicionar conteudo a uma nota (ex: "adicionar X na nota Y")
+        if t.startswith("adicionar ") and " na nota " in t:
+            partes = text[len("adicionar "):].split(" na nota ", 1)
+            if len(partes) == 2:
+                conteudo, nota = partes[0].strip(), partes[1].strip()
+                threading.Thread(target=self._vault_append, args=(nota, conteudo), daemon=True).start()
+                return True
+
+        # Analise de respostas do Obsidian
+        for prefix in ["analisa minhas respostas de ", "corrigir questoes de ", "corrigir questões de ",
+                        "analisar questoes de ", "analisar questões de ", "corrige questoes de ",
+                        "corrige questões de ", "ver resultado de ", "resultado de "]:
+            if t.startswith(prefix):
+                tema = text[len(prefix):].strip()
+                threading.Thread(target=self._analisar_respostas, args=(tema,), daemon=True).start()
+                return True
+
         return False
+
+    # --------------------------------------------------------
+    # OBSIDIAN — OPERACOES DIRETAS
+    # --------------------------------------------------------
+    def _vault_find_note(self, termo):
+        """Encontra o caminho de uma nota pelo nome (busca parcial)."""
+        termo_lower = termo.lower().replace(" ", "")
+        best = None
+        best_score = 0
+        for root, dirs, files in os.walk(OBSIDIAN_VAULT):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for fname in files:
+                if not fname.endswith(".md"):
+                    continue
+                fname_lower = fname.lower().replace(" ", "").replace(".md", "")
+                # score por letras em comum
+                score = sum(1 for c in termo_lower if c in fname_lower)
+                if termo_lower in fname_lower:
+                    score += 100
+                if score > best_score:
+                    best_score = score
+                    best = os.path.join(root, fname)
+        return best if best_score > 2 else None
+
+    def _vault_read(self, termo):
+        path = self._vault_find_note(termo)
+        if not path:
+            self.after(0, lambda: self._add_message("ERRO", f"Nota '{termo}' nao encontrada.", "#ff4444"))
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        fname = os.path.basename(path)
+        self.after(0, lambda: self._add_message("Obsidian", f"[{fname}]", "#bf7fff"))
+        # Mostra e manda para IA comentar
+        preview = content[:800] + ("..." if len(content) > 800 else "")
+        self.after(0, lambda: self._add_message(ASSISTANT_NAME, preview, "#a0d4f5"))
+        prompt = f"Esta e a nota '{fname}' do meu Obsidian:\n\n{content[:8000]}\n\nFaca um breve comentario sobre o conteudo e pergunte se quero continuar estudando ou se tenho duvidas."
+        threading.Thread(target=self._get_ai_response, args=(prompt,), daemon=True).start()
+
+    def _vault_set_status(self, termo, emoji):
+        path = self._vault_find_note(termo)
+        if not path:
+            self.after(0, lambda: self._add_message("ERRO", f"Nota '{termo}' nao encontrada.", "#ff4444"))
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        import re
+        # Atualiza o campo status no frontmatter
+        if 'status:' in content:
+            new_content = re.sub(r'status:.*', f'status: "{emoji}"', content)
+        else:
+            new_content = content.replace("---\n", f'---\nstatus: "{emoji}"\n', 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        fname = os.path.basename(path)
+        msg = f"Status de '{fname}' atualizado para {emoji}."
+        self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
+        self.after(0, lambda: self._speak(msg))
+
+    def _vault_append(self, nota, conteudo):
+        path = self._vault_find_note(nota)
+        if not path:
+            self.after(0, lambda: self._add_message("ERRO", f"Nota '{nota}' nao encontrada.", "#ff4444"))
+            return
+        now = datetime.now().strftime("%H:%M")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n\n> [{now}] {conteudo}")
+        fname = os.path.basename(path)
+        msg = f"Adicionado em '{fname}'."
+        self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
+        self.after(0, lambda: self._speak(msg))
+
+    def _analisar_respostas(self, tema):
+        import re
+        path = self._vault_find_note(tema + " questoes")
+        if not path:
+            path = self._vault_find_note(tema)
+        if not path or "questoes" not in path.lower().replace("õ", "o").replace("ô", "o"):
+            # busca especificamente na pasta 500 - Questoes
+            path = None
+            tema_lower = tema.lower()
+            for root, dirs, files in os.walk(OBSIDIAN_VAULT):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                if "questoes" not in root.lower().replace("õ", "o").replace("ô", "o") and \
+                   "500" not in root:
+                    continue
+                for fname in files:
+                    if fname.endswith(".md") and tema_lower.replace(" ", "") in fname.lower().replace(" ", ""):
+                        path = os.path.join(root, fname)
+                        break
+                if path:
+                    break
+        if not path:
+            msg = f"Nao encontrei o arquivo de questoes de '{tema}'."
+            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
+            return
+
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Extrai respostas marcadas: - [x] (A) ...
+        respostas = {}
+        for m in re.finditer(r'- \[x\] \(([A-E])\)', content, re.IGNORECASE):
+            # Encontra a qual questão pertence (conta blocos de questão anteriores)
+            pos = m.start()
+            qs_antes = len(re.findall(r'\*\*Questão\s*(\d+)\*\*', content[:pos]))
+            if qs_antes not in respostas:
+                respostas[qs_antes] = m.group(1).upper()
+
+        if not respostas:
+            msg = "Nenhuma resposta marcada ainda. Marque suas respostas no Obsidian com - [x] antes de analisar."
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#ffaa00"))
+            self._speak(msg)
+            return
+
+        # Extrai gabarito: **Q1: B** — explicação
+        gabarito = {}
+        for m in re.finditer(r'\*\*Q(\d+):\s*([A-E])\*\*', content):
+            gabarito[int(m.group(1))] = m.group(2).upper()
+
+        if not gabarito:
+            msg = "Nao encontrei o gabarito no arquivo de questoes."
+            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
+            return
+
+        acertos = 0
+        linhas = []
+        for num in sorted(gabarito.keys()):
+            resp = respostas.get(num, "—")
+            correta = gabarito[num]
+            if resp == correta:
+                acertos += 1
+                linhas.append(f"Q{num}: ✓ ({resp})")
+            else:
+                linhas.append(f"Q{num}: ✗ sua={resp} | certa={correta}")
+
+        total = len(gabarito)
+        pct = int(acertos / total * 100)
+        resumo = f"Resultado: {acertos}/{total} ({pct}%)\n\n" + "\n".join(linhas)
+        self.after(0, lambda: self._add_message(ASSISTANT_NAME, resumo, "#00ff88" if pct >= 70 else "#ffaa00"))
+        fala = f"Você acertou {acertos} de {total} questões, {pct} por cento."
+        self.after(0, lambda: self._speak(fala))
+
+        # Salva score no frontmatter do arquivo de questoes
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end != -1:
+                    fm = content[3:end]
+                    for campo in ["acertos", "total", "percentual", "ultima_avaliacao"]:
+                        fm = re.sub(rf'\n{campo}:.*', '', fm)
+                    fm = fm.rstrip() + f"\nacertos: {acertos}\ntotal: {total}\npercentual: {pct}\nultima_avaliacao: {today}\n"
+                    novo_content = "---" + fm + "---" + content[end + 3:]
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(novo_content)
+        except Exception:
+            pass
+
+    def _vault_list(self, pasta):
+        pasta_lower = pasta.lower()
+        notas = []
+        for root, dirs, files in os.walk(OBSIDIAN_VAULT):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            folder = os.path.basename(root).lower()
+            if pasta_lower in folder or pasta_lower in root.lower():
+                for fname in files:
+                    if fname.endswith(".md"):
+                        notas.append(fname.replace(".md", ""))
+        if notas:
+            lista = "\n".join(f"- {n}" for n in notas)
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, f"Notas em '{pasta}':\n{lista}", "#a0d4f5"))
+        else:
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, f"Nenhuma nota encontrada em '{pasta}'.", "#ff6b35"))
+
+    def _search_vault(self, query):
+        """Busca notas relevantes no vault pelo conteudo da pergunta."""
+        try:
+            results = []
+            query_words = set(query.lower().split())
+            stop = {"o", "a", "os", "as", "de", "do", "da", "e", "em", "que", "para", "com", "um", "uma"}
+            query_words -= stop
+
+            for root, dirs, files in os.walk(OBSIDIAN_VAULT):
+                # Ignora pastas de sistema
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for fname in files:
+                    if not fname.endswith(".md"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        score = sum(1 for w in query_words if w in content.lower())
+                        if score > 0:
+                            results.append((score, fname, content[:3000]))
+                    except Exception:
+                        continue
+
+            results.sort(reverse=True)
+            return results[:3]  # top 3 notas mais relevantes
+        except Exception:
+            return []
 
     def _process_input(self, text):
         if self._detect_skill(text):
             return
+        if "youtube.com/watch" in text or "youtu.be/" in text:
+            threading.Thread(target=self._process_youtube, args=(text.strip(),), daemon=True).start()
+            return
+        if text.strip().lower().endswith(".pdf") and os.path.isfile(text.strip()):
+            threading.Thread(target=self._extract_and_study_pdf, args=(text.strip(),), daemon=True).start()
+            return
         self._add_message(USER_NAME, text, "#ffaa00")
         self._set_status("Pensando...", "#00bfff")
-        # Injeta contexto do PDF se modo estudo ativo
+
+        # Monta contexto: PDF ativo + notas relevantes do Obsidian
+        context_parts = []
+
         if self.study_pdf:
             filename, pdf_text = self.study_pdf
-            enriched = f"[Contexto: estamos estudando o PDF '{filename}']\n\nPergunta: {text}\n\nConteúdo do PDF:\n{pdf_text[:20000]}"
+            context_parts.append(f"[PDF em estudo: '{filename}']\n{pdf_text[:15000]}")
+
+        vault_notes = self._search_vault(text)
+        if vault_notes:
+            notes_text = "\n\n---\n".join(
+                f"[Nota: {fname}]\n{content}" for _, fname, content in vault_notes
+            )
+            context_parts.append(f"[Notas relevantes do Obsidian]\n{notes_text}")
+
+        if context_parts:
+            enriched = "\n\n===\n".join(context_parts) + f"\n\n===\nPergunta: {text}"
             threading.Thread(target=self._get_ai_response, args=(enriched,), daemon=True).start()
         else:
             threading.Thread(target=self._get_ai_response, args=(text,), daemon=True).start()
