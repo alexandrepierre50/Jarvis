@@ -66,6 +66,12 @@ class JarvisApp(ctk.CTk):
     # VOZ
     # --------------------------------------------------------
     def _speak(self, text):
+        # ElevenLabs falha silenciosamente com textos muito longos — trunca em 500 chars
+        if len(text) > 500:
+            # Fala apenas ate o fim da primeira frase completa dentro do limite
+            trunc = text[:500]
+            last_period = max(trunc.rfind("."), trunc.rfind("!"), trunc.rfind("?"))
+            text = trunc[:last_period + 1] if last_period > 100 else trunc
         self.is_speaking = True
         self._set_status("Falando...", "#00bfff")
         threading.Thread(target=self._speak_thread, args=(text,), daemon=True).start()
