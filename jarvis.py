@@ -1049,9 +1049,9 @@ Retorne a análise em markdown."""
             return
 
         self._set_status("Lendo PDF...", "#00bfff")
-        threading.Thread(target=self._extract_pdf_then_ask, args=(path,), daemon=True).start()
+        threading.Thread(target=self._extract_and_study_pdf, args=(path,), daemon=True).start()
 
-    def _extract_pdf_then_ask(self, path):
+    def _extract_and_study_pdf(self, path):
         try:
             text = ""
             with pdfplumber.open(path) as pdf:
@@ -1063,83 +1063,83 @@ Retorne a análise em markdown."""
                 return
 
             filename = os.path.basename(path)
-            self.after(0, lambda: self._show_pdf_modal(filename, text))
+            self.after(0, lambda: self._add_message(USER_NAME, f"[PDF: {filename}]", "#ffaa00"))
+            self.after(0, lambda: self._set_status("Gerando material de estudo...", "#00ff88"))
 
-        except Exception as e:
-            self.after(0, lambda: self._add_message("ERRO", f"Erro ao ler PDF: {str(e)}", "#ff4444"))
-            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+            # Ativa modo estudo para perguntas futuras
+            self.after(0, lambda: self._start_study_mode(filename, text, silent=True))
 
-    def _show_pdf_modal(self, filename, text):
-        win = ctk.CTkToplevel(self)
-        win.title("PDF carregado")
-        win.geometry("420x220")
-        win.configure(fg_color="#050d1a")
-        win.grab_set()
+            # Gera todo o material em uma unica chamada
+            prompt = f"""Analise o PDF '{filename}' e gere um material de estudo completo com as seguintes secoes em markdown:
 
-        ctk.CTkLabel(win, text=filename,
-                     font=ctk.CTkFont(family="Courier New", size=12, weight="bold"),
-                     text_color="#00bfff", wraplength=380).pack(pady=(18, 4), padx=20)
+## Resumo Completo
+Resumo detalhado e didatico de todos os topicos principais do documento.
 
-        pages_info = f"{len(text)} caracteres extraidos"
-        ctk.CTkLabel(win, text=pages_info,
-                     font=ctk.CTkFont(family="Courier New", size=10),
-                     text_color="#1a6b8a").pack(pady=(0, 16))
+## Flashcards
+Liste pelo menos 15 flashcards no formato:
+**P:** (pergunta)
+**R:** (resposta)
 
-        ctk.CTkLabel(win, text="O que voce quer fazer com este PDF?",
-                     font=ctk.CTkFont(family="Courier New", size=11),
-                     text_color="#a0d4f5").pack(pady=(0, 12))
+## Exercicios
+Crie pelo menos 8 exercicios de fixacao com gabarito ao final.
 
-        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=20)
+## Mapa Mental
+Represente a estrutura do documento em hierarquia de topicos:
+### Tema Central: [titulo principal]
+- **Topico 1**
+  - Subtopico 1.1
+  - Subtopico 1.2
+- **Topico 2**
+  ...
 
-        def resumir():
-            win.destroy()
-            self._add_message(USER_NAME, f"[PDF: {filename}]", "#ffaa00")
-            threading.Thread(target=self._process_pdf_summary, args=(filename, text), daemon=True).start()
+Conteudo do PDF:
+{text[:22000]}"""
 
-        def estudar():
-            win.destroy()
-            self._start_study_mode(filename, text)
-
-        ctk.CTkButton(btn_frame, text="Resumir",
-                      font=ctk.CTkFont(family="Courier New", size=13),
-                      fg_color="#003a6a", hover_color="#005a9a",
-                      text_color="#00bfff", height=42, corner_radius=10,
-                      command=resumir).pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-        ctk.CTkButton(btn_frame, text="Modo Estudo",
-                      font=ctk.CTkFont(family="Courier New", size=13, weight="bold"),
-                      fg_color="#0a2a00", hover_color="#1a4a00",
-                      text_color="#00ff88", border_width=1, border_color="#00ff88",
-                      height=42, corner_radius=10,
-                      command=estudar).pack(side="left", fill="x", expand=True)
-
-    def _process_pdf_summary(self, filename, text):
-        try:
-            prompt = f"Analisei o seguinte PDF chamado '{filename}'. Por favor, faca um resumo detalhado do conteudo, destacando os pontos principais:\n\n{text[:20000]}"
-            self.after(0, lambda: self._set_status("JARVIS analisando PDF...", "#00bfff"))
-            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=120)
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=180)
             res.raise_for_status()
-            reply = res.json()["reply"]
-            self.after(0, lambda: self._add_message(ASSISTANT_NAME, reply, "#00bfff"))
-            self.after(0, lambda: self._speak(reply))
+            material = res.json()["reply"]
+
+            # Salva no Obsidian - pasta Estudos
+            self.after(0, lambda: self._save_study_to_obsidian(filename, material))
+
+            # Mostra resumo no chat (primeiros 600 chars) e avisa que foi salvo
+            preview = material[:600] + "..." if len(material) > 600 else material
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, preview, "#00bfff"))
+            saved_msg = f"Material completo salvo no Obsidian em Estudos/{os.path.splitext(filename)[0]}."
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, saved_msg, "#00ff88"))
+            self.after(0, lambda: self._speak(f"Material de estudo gerado e salvo no Obsidian. Pode me fazer perguntas sobre o conteudo."))
+
         except Exception as e:
-            self.after(0, lambda: self._add_message("ERRO", f"Erro: {str(e)}", "#ff4444"))
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao processar PDF: {str(e)}", "#ff4444"))
             self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
 
-    def _start_study_mode(self, filename, text):
+    def _save_study_to_obsidian(self, filename, material):
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            basename = os.path.splitext(filename)[0]
+            study_folder = os.path.join(OBSIDIAN_VAULT, "Estudos")
+            os.makedirs(study_folder, exist_ok=True)
+            note_path = os.path.join(study_folder, f"{basename}.md")
+
+            header = f"---\ntags: [estudo, pdf]\ndata: {today}\nfonte: {filename}\n---\n\n# {basename}\n\n"
+            with open(note_path, "w", encoding="utf-8") as f:
+                f.write(header + material)
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao salvar no Obsidian: {str(e)}", "#ff4444"))
+
+    def _start_study_mode(self, filename, text, silent=False):
         self.study_pdf = (filename, text)
         short_name = filename if len(filename) <= 40 else filename[:37] + "..."
         self.study_label.configure(text=f"Modo Estudo ativo: {short_name}")
         self.study_banner.pack(fill="x", padx=20, pady=(0, 6), before=self.chat_frame)
 
-        intro = f"[Modo Estudo: {filename}]"
-        self._add_message(USER_NAME, intro, "#00ff88")
-
-        prompt = (f"Acabei de carregar o PDF '{filename}' para estudarmos juntos. "
-                  f"Aqui está o conteúdo completo:\n\n{text[:20000]}\n\n"
-                  f"Apresente-se brevemente como meu tutor para este material e me diga o tema e estrutura principal do documento.")
-        threading.Thread(target=self._get_ai_response, args=(prompt,), daemon=True).start()
+        if not silent:
+            intro = f"[Modo Estudo: {filename}]"
+            self._add_message(USER_NAME, intro, "#00ff88")
+            prompt = (f"Acabei de carregar o PDF '{filename}' para estudarmos juntos. "
+                      f"Aqui esta o conteudo:\n\n{text[:20000]}\n\n"
+                      f"Apresente-se como meu tutor e me diga o tema e estrutura principal do documento.")
+            threading.Thread(target=self._get_ai_response, args=(prompt,), daemon=True).start()
 
     def _stop_study_mode(self):
         self.study_pdf = None
