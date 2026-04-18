@@ -554,6 +554,12 @@ class JarvisApp(ctk.CTk):
                     threading.Thread(target=self._gerar_questoes_simulado, args=(resto, bloco), daemon=True).start()
                     return True
 
+        # Processar inbox
+        if any(k in t for k in ["processar inbox", "processar a inbox", "processar minha inbox",
+                                  "organizar inbox", "limpar inbox", "classificar inbox"]):
+            threading.Thread(target=self._processar_inbox, daemon=True).start()
+            return True
+
         # Analise de respostas do Obsidian
         for prefix in ["analisa minhas respostas de ", "corrigir questoes de ", "corrigir questões de ",
                         "analisar questoes de ", "analisar questões de ", "corrige questoes de ",
@@ -1026,6 +1032,127 @@ class JarvisApp(ctk.CTk):
             _falar(f"Abrindo '{alvo}'.")
         except Exception:
             _erro(f"Não reconheci o que abrir: '{alvo}'. Tente dizer 'abrir site X', 'abrir pasta downloads', ou o nome de um app.")
+
+    def _processar_inbox(self):
+        import re, shutil as _shutil
+        inbox = os.path.join(OBSIDIAN_VAULT, "_inbox")
+        os.makedirs(inbox, exist_ok=True)
+
+        arquivos = [f for f in os.listdir(inbox) if f.endswith(".md")]
+        if not arquivos:
+            msg = "Inbox vazia! Nenhuma nota para processar."
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
+            self.after(0, lambda: self._speak("Sua inbox está vazia."))
+            return
+
+        self.after(0, lambda: self._add_message(ASSISTANT_NAME,
+            f"Processando {len(arquivos)} nota(s) da inbox...", "#00bfff"))
+        self.after(0, lambda: self._set_status("Processando inbox...", "#00ff88"))
+
+        DESTINOS = {
+            "100 - Basicos/Portugues":  ["português", "portugues", "gramática", "gramatica",
+                                          "interpretação", "interpretacao", "redação", "redacao",
+                                          "concordância", "concordancia", "verbos", "sintaxe",
+                                          "morfologia", "texto", "leitura"],
+            "100 - Basicos/Matematica": ["matemática", "matematica", "cálculo", "calculo",
+                                          "porcentagem", "percentagem", "razão", "razao",
+                                          "proporção", "proporção", "equação", "equacao",
+                                          "geometria", "álgebra", "algebra", "fração", "fracao"],
+            "100 - Basicos/Ingles":     ["inglês", "ingles", "english", "grammar", "vocabulary",
+                                          "reading", "verb", "tense", "preposition"],
+            "200 - Bloco I":            ["administração", "administracao", "logística", "logistica",
+                                          "gestão", "gestao", "organização", "organizacao",
+                                          "planejamento", "estratégia", "estrategia", "bloco i",
+                                          "bloco 1", "rh", "recursos humanos"],
+            "300 - Bloco II":           ["legislação", "legislacao", "lei", "decreto", "norma",
+                                          "regulamento", "compliance", "ética", "etica",
+                                          "bloco ii", "bloco 2", "direito", "jurídico", "juridico"],
+            "400 - Bloco III":          ["contabilidade", "balanço", "balanco", "ativo", "passivo",
+                                          "patrimônio", "patrimonio", "demonstração", "demonstracao",
+                                          "bloco iii", "bloco 3", "financeiro", "fluxo de caixa"],
+            "500 - Questoes/Basicos":   ["questão", "questao", "questões", "questoes", "exercício",
+                                          "exercicio", "gabarito", "simulado", "prova", "teste"],
+            "600 - Revisoes":           ["revisão", "revisao", "revisar", "resumo", "síntese",
+                                          "sintese", "recap", "mapa mental"],
+            "Diario JARVIS":            ["diário", "diario", "hoje", "sentindo", "dia foi"],
+        }
+
+        notas_info = []
+        for fname in arquivos:
+            fpath = os.path.join(inbox, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    conteudo = f.read()
+                notas_info.append((fname, fpath, conteudo))
+            except Exception:
+                continue
+
+        # Monta prompt para Claude classificar em lote
+        lista_notas = "\n\n".join(
+            f"NOTA: {fname}\nCONTEUDO:\n{conteudo[:800]}"
+            for fname, _, conteudo in notas_info
+        )
+        pastas_disponiveis = "\n".join(f"- {p}" for p in DESTINOS.keys())
+
+        prompt = (f"Classifique cada nota abaixo na pasta mais adequada do vault de estudos para concurso Petrobras.\n\n"
+                  f"PASTAS DISPONÍVEIS:\n{pastas_disponiveis}\n\n"
+                  f"NOTAS:\n{lista_notas}\n\n"
+                  f"Para cada nota, responda EXATAMENTE neste formato (uma linha por nota):\n"
+                  f"ARQUIVO: nome_do_arquivo.md | PASTA: pasta/escolhida\n\n"
+                  f"Responda APENAS as linhas de classificação, sem explicação.")
+
+        try:
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=60)
+            res.raise_for_status()
+            resposta = res.json()["reply"]
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao classificar: {e}", "#ff4444"))
+            return
+
+        # Parseia a resposta e move os arquivos
+        movidos = []
+        erros = []
+        for linha in resposta.splitlines():
+            m = re.search(r'ARQUIVO:\s*(.+?)\s*\|\s*PASTA:\s*(.+)', linha)
+            if not m:
+                continue
+            fname_resp = m.group(1).strip()
+            pasta_resp = m.group(2).strip()
+
+            # Encontra o arquivo correspondente
+            match = next(((fn, fp, c) for fn, fp, c in notas_info if fn == fname_resp), None)
+            if not match:
+                continue
+            fname, fpath, _ = match
+
+            # Destino final
+            destino_dir = os.path.join(OBSIDIAN_VAULT, pasta_resp)
+            os.makedirs(destino_dir, exist_ok=True)
+            destino_path = os.path.join(destino_dir, fname)
+
+            # Se já existe, acrescenta sufixo
+            if os.path.exists(destino_path):
+                base, ext = os.path.splitext(fname)
+                destino_path = os.path.join(destino_dir, f"{base}_{datetime.now().strftime('%H%M%S')}{ext}")
+
+            try:
+                _shutil.move(fpath, destino_path)
+                movidos.append(f"✓ {fname} → {pasta_resp}")
+            except Exception as ex:
+                erros.append(f"✗ {fname}: {ex}")
+
+        # Relatorio final
+        if movidos:
+            relatorio = "Inbox processada!\n\n" + "\n".join(movidos)
+            if erros:
+                relatorio += "\n\nErros:\n" + "\n".join(erros)
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, relatorio, "#00ff88"))
+            self.after(0, lambda: self._speak(f"Processado. {len(movidos)} nota(s) organizada(s)."))
+        else:
+            msg = "Não consegui classificar as notas. Verifique o formato da inbox."
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#ffaa00"))
+
+        self.after(0, lambda: self._set_status("Pronto!", "#00ff88"))
 
     def _search_vault(self, query):
         """Busca notas relevantes no vault pelo conteudo da pergunta."""
