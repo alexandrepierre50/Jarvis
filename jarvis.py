@@ -6,6 +6,8 @@ import tempfile
 import os
 import shutil
 import requests
+import subprocess
+import webbrowser
 from datetime import datetime
 from tkinter import filedialog
 from PIL import ImageGrab
@@ -525,6 +527,33 @@ class JarvisApp(ctk.CTk):
                 threading.Thread(target=self._vault_append, args=(nota, conteudo), daemon=True).start()
                 return True
 
+        # Gerar questoes / simulado
+        for prefix in [
+                "criar questoes de ", "criar questões de ",
+                "gerar questoes de ", "gerar questões de ",
+                "fazer questoes de ", "fazer questões de ",
+                "fazer um simulado de ", "fazer simulado de ",
+                "me faz questoes de ", "me faz questões de ",
+                "questoes de ", "questões de ",
+                "questoes sobre ", "questões sobre ",
+                "criar questoes sobre ", "criar questões sobre ",
+                "gerar questoes sobre ", "gerar questões sobre ",
+                "fazer questoes sobre ", "fazer questões sobre ",
+                "simulado de ", "criar simulado de ", "gerar simulado de ",
+                "cria questoes de ", "cria questões de "]:
+            if t.startswith(prefix):
+                resto = text[len(prefix):].strip()
+                bloco = "Geral"
+                for sep in [" bloco ", " no bloco ", " para o bloco ", " para bloco "]:
+                    if sep in resto.lower():
+                        idx = resto.lower().index(sep)
+                        bloco = resto[idx + len(sep):].strip().title()
+                        resto = resto[:idx].strip()
+                        break
+                if resto:
+                    threading.Thread(target=self._gerar_questoes_simulado, args=(resto, bloco), daemon=True).start()
+                    return True
+
         # Analise de respostas do Obsidian
         for prefix in ["analisa minhas respostas de ", "corrigir questoes de ", "corrigir questões de ",
                         "analisar questoes de ", "analisar questões de ", "corrige questoes de ",
@@ -533,6 +562,28 @@ class JarvisApp(ctk.CTk):
                 tema = text[len(prefix):].strip()
                 threading.Thread(target=self._analisar_respostas, args=(tema,), daemon=True).start()
                 return True
+
+        # Controle do sistema — abrir pasta/site/app
+        for prefix in ["abrir o ", "abrir a ", "abrir os ", "abrir as ", "abrir "]:
+            if t.startswith(prefix):
+                cmd = text[len(prefix):].strip()
+                if cmd:
+                    threading.Thread(target=self._executar_sistema, args=(cmd,), daemon=True).start()
+                    return True
+
+        # Pesquisa rápida no YouTube/Google por voz
+        for prefix in ["pesquisar no youtube ", "pesquisar no google ", "buscar no google ",
+                        "buscar no youtube ", "procurar no youtube ", "procurar no google "]:
+            if t.startswith(prefix):
+                threading.Thread(target=self._executar_sistema, args=(text,), daemon=True).start()
+                return True
+
+        # Comandos do sistema sem prefixo "abrir"
+        if any(k in t for k in ["bloquear tela", "bloquear computador", "bloquear pc", "travar tela",
+                                  "desligar computador", "desligar o pc", "reiniciar computador",
+                                  "reiniciar o pc", "cancelar desligamento"]):
+            threading.Thread(target=self._executar_sistema, args=(text,), daemon=True).start()
+            return True
 
         return False
 
@@ -607,22 +658,122 @@ class JarvisApp(ctk.CTk):
         self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
         self.after(0, lambda: self._speak(msg))
 
+    def _gerar_questoes_simulado(self, tema, bloco="Geral"):
+        import re
+        try:
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME,
+                f"Gerando simulado sobre '{tema}' (bloco: {bloco})... Pode demorar um pouco.", "#00bfff"))
+            self.after(0, lambda: self._set_status("Buscando notas e gerando questões...", "#00ff88"))
+
+            # Contexto 1: PDF em modo estudo
+            pdf_context = ""
+            if self.study_pdf:
+                fname, pdf_text = self.study_pdf
+                pdf_context = (f"\n\nUse o seguinte conteúdo do PDF '{fname}' como base principal "
+                               f"para as questões:\n{pdf_text[:12000]}")
+
+            # Contexto 2: notas do Obsidian sobre o tema (busca automática)
+            vault_context = ""
+            vault_notes = self._search_vault(tema)
+            if vault_notes:
+                nomes = ", ".join(fname for _, fname, _ in vault_notes)
+                self.after(0, lambda: self._add_message(ASSISTANT_NAME,
+                    f"Encontrei {len(vault_notes)} nota(s) no Obsidian: {nomes}. Usando como base.", "#a0d4f5"))
+                notes_text = "\n\n---\n".join(
+                    f"[Nota: {fname}]\n{content}" for _, fname, content in vault_notes
+                )
+                vault_context = (f"\n\nUse também o conteúdo das minhas notas do Obsidian "
+                                 f"sobre '{tema}' como base para as questões:\n{notes_text}")
+
+            prompt = (f"Crie um simulado completo com 35 questões de múltipla escolha sobre o tema: {tema}. "
+                      f"As questões devem ser no estilo de concursos públicos brasileiros "
+                      f"(CESPE, FCC, VUNESP, CESGRANRIO, CEBRASPE etc.), com nível variado "
+                      f"(fácil, médio e difícil).{pdf_context}{vault_context}\n\n"
+                      f"FORMATO OBRIGATÓRIO para cada questão:\n\n"
+                      f"**Questão N** *(Banca: NOME_BANCA, Ano: ANO)*\n\n"
+                      f"Enunciado da questão aqui.\n\n"
+                      f"- [ ] (A) alternativa A\n"
+                      f"- [ ] (B) alternativa B\n"
+                      f"- [ ] (C) alternativa C\n"
+                      f"- [ ] (D) alternativa D\n"
+                      f"- [ ] (E) alternativa E\n\n"
+                      f"---\n\n"
+                      f"REGRAS:\n"
+                      f"- Numere de 1 a 35\n"
+                      f"- Crie questões realistas, claras e bem formuladas\n"
+                      f"- Varie o nível de dificuldade\n"
+                      f"- Ao final de TODAS as questões, adicione o gabarito neste formato exato:\n\n"
+                      f"## Gabarito\n"
+                      f"**Q1: X** — breve justificativa\n"
+                      f"**Q2: X** — breve justificativa\n"
+                      f"...\n"
+                      f"**Q35: X** — breve justificativa\n\n"
+                      f"Gere as 35 questões agora:")
+
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=300)
+            res.raise_for_status()
+            content = res.json()["reply"]
+
+            n_questoes = len(re.findall(r'\*\*Questão\s+\d+\*\*', content))
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            tema_slug = re.sub(r'[^\w\s-]', '', tema.lower()).strip().replace(" ", "_")
+
+            folder = os.path.join(OBSIDIAN_VAULT, "Questoes", bloco)
+            os.makedirs(folder, exist_ok=True)
+
+            filename = f"{tema_slug}_simulado_{today}.md"
+            note_path = os.path.join(folder, filename)
+
+            header = (f"---\n"
+                      f"tags: [questoes, simulado, {tema.lower()}]\n"
+                      f"tema: \"{tema}\"\n"
+                      f"bloco: \"{bloco}\"\n"
+                      f"data: {today}\n"
+                      f"total: {n_questoes}\n"
+                      f"acertos: 0\n"
+                      f"percentual: 0\n"
+                      f"ultima_avaliacao: \"\"\n"
+                      f"---\n\n"
+                      f"# Simulado: {tema}\n"
+                      f"> Bloco: {bloco} | Data: {today} | Total: {n_questoes} questões\n\n"
+                      f"> **Como usar:** Marque sua resposta trocando `- [ ]` por `- [x]` "
+                      f"na alternativa escolhida. Depois peça ao Jarvis: "
+                      f"*\"analisar questões de {tema}\"*\n\n"
+                      f"---\n\n")
+
+            with open(note_path, "w", encoding="utf-8") as f:
+                f.write(header + content)
+
+            msg = (f"Simulado criado com {n_questoes} questões!\n"
+                   f"Salvo em: Questoes/{bloco}/{filename}\n"
+                   f"Para corrigir: diga 'analisar questões de {tema}'")
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
+            self.after(0, lambda: self._set_status("Pronto!", "#00ff88"))
+            fala = (f"Simulado de {tema} criado com {n_questoes} questões e salvo no Obsidian. "
+                    f"Para corrigir suas respostas, me peça para analisar as questões de {tema}.")
+            self.after(0, lambda: self._speak(fala))
+
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao gerar questões: {str(e)}", "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
     def _analisar_respostas(self, tema):
         import re
         path = self._vault_find_note(tema + " questoes")
         if not path:
             path = self._vault_find_note(tema)
         if not path or "questoes" not in path.lower().replace("õ", "o").replace("ô", "o"):
-            # busca especificamente na pasta 500 - Questoes
+            # busca em Questoes/ (simulados gerados) e 500 - Questoes (Petrobras)
             path = None
-            tema_lower = tema.lower()
+            tema_lower = tema.lower().replace(" ", "")
             for root, dirs, files in os.walk(OBSIDIAN_VAULT):
                 dirs[:] = [d for d in dirs if not d.startswith(".")]
-                if "questoes" not in root.lower().replace("õ", "o").replace("ô", "o") and \
-                   "500" not in root:
+                root_norm = root.lower().replace("õ", "o").replace("ô", "o")
+                if "questoes" not in root_norm and "500" not in root:
                     continue
                 for fname in files:
-                    if fname.endswith(".md") and tema_lower.replace(" ", "") in fname.lower().replace(" ", ""):
+                    if fname.endswith(".md") and tema_lower in fname.lower().replace(" ", ""):
                         path = os.path.join(root, fname)
                         break
                 if path:
@@ -709,6 +860,172 @@ class JarvisApp(ctk.CTk):
             self.after(0, lambda: self._add_message(ASSISTANT_NAME, f"Notas em '{pasta}':\n{lista}", "#a0d4f5"))
         else:
             self.after(0, lambda: self._add_message(ASSISTANT_NAME, f"Nenhuma nota encontrada em '{pasta}'.", "#ff6b35"))
+
+    # --------------------------------------------------------
+    # CONTROLE DO SISTEMA (pastas, sites, apps, sistema)
+    # --------------------------------------------------------
+    def _executar_sistema(self, comando):
+        t = comando.lower().strip()
+
+        PASTAS = {
+            "downloads": os.path.expanduser("~/Downloads"),
+            "documentos": os.path.expanduser("~/Documents"),
+            "documents": os.path.expanduser("~/Documents"),
+            "desktop": os.path.expanduser("~/Desktop"),
+            "área de trabalho": os.path.expanduser("~/Desktop"),
+            "area de trabalho": os.path.expanduser("~/Desktop"),
+            "imagens": os.path.expanduser("~/Pictures"),
+            "fotos": os.path.expanduser("~/Pictures"),
+            "pictures": os.path.expanduser("~/Pictures"),
+            "vídeos": os.path.expanduser("~/Videos"),
+            "videos": os.path.expanduser("~/Videos"),
+            "música": os.path.expanduser("~/Music"),
+            "musica": os.path.expanduser("~/Music"),
+            "music": os.path.expanduser("~/Music"),
+            "disco c": "C:\\",
+            "disco local c": "C:\\",
+        }
+
+        SITES = {
+            "youtube": "https://www.youtube.com",
+            "google": "https://www.google.com",
+            "gmail": "https://mail.google.com",
+            "instagram": "https://www.instagram.com",
+            "facebook": "https://www.facebook.com",
+            "twitter": "https://www.twitter.com",
+            "x.com": "https://www.x.com",
+            "whatsapp": "https://web.whatsapp.com",
+            "github": "https://www.github.com",
+            "linkedin": "https://www.linkedin.com",
+            "netflix": "https://www.netflix.com",
+            "spotify web": "https://open.spotify.com",
+            "chatgpt": "https://chatgpt.com",
+            "claude": "https://claude.ai",
+            "notion": "https://www.notion.so",
+        }
+
+        APPS = {
+            "calculadora": "calc",
+            "bloco de notas": "notepad",
+            "notepad": "notepad",
+            "paint": "mspaint",
+            "explorador de arquivos": "explorer",
+            "gerenciador de arquivos": "explorer",
+            "gerenciador de tarefas": "taskmgr",
+            "task manager": "taskmgr",
+            "configurações": "ms-settings:",
+            "configuracoes": "ms-settings:",
+            "painel de controle": "control",
+            "cmd": "cmd",
+            "terminal": "cmd",
+            "powershell": "powershell",
+            "chrome": "chrome",
+            "edge": "msedge",
+            "firefox": "firefox",
+            "vlc": "vlc",
+            "discord": "discord",
+            "steam": "steam",
+            "vscode": "code",
+            "vs code": "code",
+            "visual studio code": "code",
+            "word": "winword",
+            "excel": "excel",
+            "powerpoint": "powerpnt",
+        }
+
+        def _falar(msg):
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
+            self.after(0, lambda: self._speak(msg))
+
+        def _erro(msg):
+            self.after(0, lambda: self._add_message("ERRO", msg, "#ff4444"))
+            self.after(0, lambda: self._speak(msg))
+
+        def _abrir_app(exe):
+            if exe.startswith("ms-settings:"):
+                subprocess.Popen(f"start {exe}", shell=True)
+            else:
+                subprocess.Popen(exe, shell=True)
+
+        # ── Pesquisa no YouTube ────────────────────────────────
+        for p in ["pesquisar no youtube ", "buscar no youtube ", "procurar no youtube "]:
+            if t.startswith(p):
+                q = comando[len(p):].strip()
+                webbrowser.open(f"https://www.youtube.com/results?search_query={q.replace(' ', '+')}")
+                _falar(f"Pesquisando '{q}' no YouTube.")
+                return
+
+        # ── Pesquisa no Google ─────────────────────────────────
+        for p in ["pesquisar no google ", "buscar no google ", "procurar no google ",
+                  "pesquisar ", "buscar "]:
+            if t.startswith(p):
+                q = comando[len(p):].strip()
+                if q and "." not in q:
+                    webbrowser.open(f"https://www.google.com/search?q={q.replace(' ', '+')}")
+                    _falar(f"Pesquisando '{q}' no Google.")
+                    return
+
+        # ── Comandos do sistema ────────────────────────────────
+        if any(k in t for k in ["bloquear tela", "bloquear computador", "travar tela", "bloquear pc"]):
+            subprocess.run(["rundll32", "user32.dll,LockWorkStation"])
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, "Tela bloqueada.", "#00ff88"))
+            return
+
+        if any(k in t for k in ["desligar computador", "desligar o computador", "desligar o pc"]):
+            subprocess.run(["shutdown", "/s", "/t", "30"])
+            _falar("Computador será desligado em 30 segundos. Diga 'cancelar desligamento' para abortar.")
+            return
+
+        if any(k in t for k in ["reiniciar computador", "reiniciar o computador", "reiniciar o pc"]):
+            subprocess.run(["shutdown", "/r", "/t", "30"])
+            _falar("Computador será reiniciado em 30 segundos.")
+            return
+
+        if any(k in t for k in ["cancelar desligamento", "cancelar reinicialização", "cancelar reinicio"]):
+            subprocess.run(["shutdown", "/a"])
+            _falar("Desligamento cancelado.")
+            return
+
+        # ── Site por URL direta ────────────────────────────────
+        if t.startswith("site ") or t.startswith("http"):
+            url = comando[5:].strip() if t.startswith("site ") else comando.strip()
+            if not url.startswith("http"):
+                url = "https://" + url
+            webbrowser.open(url)
+            _falar(f"Abrindo o site.")
+            return
+
+        # ── Sites conhecidos ───────────────────────────────────
+        for nome, url in SITES.items():
+            if nome in t:
+                webbrowser.open(url)
+                _falar(f"Abrindo {nome.capitalize()}.")
+                return
+
+        # ── Pastas do sistema ──────────────────────────────────
+        for chave, caminho in PASTAS.items():
+            if chave in t:
+                subprocess.Popen(["explorer", caminho])
+                _falar(f"Abrindo {chave}.")
+                return
+
+        # ── Aplicativos ────────────────────────────────────────
+        for nome, exe in APPS.items():
+            if nome in t:
+                try:
+                    _abrir_app(exe)
+                    _falar(f"Abrindo {nome}.")
+                except Exception as e:
+                    _erro(f"Não consegui abrir '{nome}'.")
+                return
+
+        # ── Último recurso: tenta abrir como arquivo/app ───────
+        alvo = comando.strip()
+        try:
+            os.startfile(alvo)
+            _falar(f"Abrindo '{alvo}'.")
+        except Exception:
+            _erro(f"Não reconheci o que abrir: '{alvo}'. Tente dizer 'abrir site X', 'abrir pasta downloads', ou o nome de um app.")
 
     def _search_vault(self, query):
         """Busca notas relevantes no vault pelo conteudo da pergunta."""

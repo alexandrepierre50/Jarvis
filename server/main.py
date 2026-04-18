@@ -153,59 +153,52 @@ class TaskRequest(BaseModel):
 # ============================================================
 # ROTAS - CHAT
 # ============================================================
-def _parse_content(content):
-    """Normaliza content: tenta parsear JSON string como lista."""
+def _extract_text(content) -> str:
+    """Extrai apenas texto de content (str ou lista de blocos). Ignora tool_use/tool_result."""
     if isinstance(content, list):
-        return content
+        texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        return " ".join(t for t in texts if t).strip()
     if isinstance(content, str):
-        stripped = content.strip()
-        if stripped.startswith("["):
+        s = content.strip()
+        if s.startswith("["):
             try:
-                parsed = json.loads(stripped)
+                parsed = json.loads(s)
                 if isinstance(parsed, list):
-                    return parsed
+                    texts = [b.get("text", "") for b in parsed if isinstance(b, dict) and b.get("type") == "text"]
+                    result = " ".join(t for t in texts if t).strip()
+                    if result:
+                        return result
+                    # lista sem blocos de texto (ex: só tool_use) → descarta
+                    return ""
             except (ValueError, TypeError):
                 pass
-    return content
-
-
-def _has_block_type(content, block_type):
-    parsed = _parse_content(content)
-    if not isinstance(parsed, list):
-        return False
-    return any(
-        (b.get("type") == block_type if isinstance(b, dict) else getattr(b, "type", None) == block_type)
-        for b in parsed
-    )
+        return s
+    return ""
 
 
 def sanitize_history(history):
-    """Remove tool_use sem tool_result correspondente e papeis consecutivos duplicados."""
+    """
+    Normaliza o histórico para a API da Anthropic:
+    - Extrai apenas texto puro, descartando tool_use/tool_result de sessões passadas
+    - Elimina mensagens vazias
+    - Garante alternância user/assistant sem roles consecutivos iguais
+    - Garante que começa com 'user'
+    """
     clean = []
-    i = 0
-    while i < len(history):
-        msg = history[i]
-        content = msg.get("content", "")
+    for msg in history:
+        role = msg.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        text = _extract_text(msg.get("content", ""))
+        if not text:
+            continue
+        if clean and clean[-1]["role"] == role:
+            continue  # descarta consecutivos com mesmo role
+        clean.append({"role": role, "content": text})
 
-        if _has_block_type(content, "tool_use"):
-            next_msg = history[i + 1] if i + 1 < len(history) else None
-            next_content = next_msg.get("content", "") if next_msg else ""
-            if next_msg and _has_block_type(next_content, "tool_result"):
-                clean.append(msg)
-                clean.append(next_msg)
-                i += 2
-            else:
-                i += 1  # descarta tool_use orfao
-        elif _has_block_type(content, "tool_result"):
-            # tool_result sem tool_use anterior — descarta
-            i += 1
-        else:
-            # Evita dois roles iguais consecutivos
-            if clean and clean[-1]["role"] == msg["role"]:
-                i += 1
-            else:
-                clean.append(msg)
-                i += 1
+    while clean and clean[0]["role"] != "user":
+        clean.pop(0)
+
     return clean
 
 
@@ -237,24 +230,33 @@ def chat(req: ChatRequest):
             messages=history
         )
 
-        # Se Claude quer usar uma ferramenta
+        diary_title = None
+        diary_content = None
+
+        # Se Claude quer usar ferramentas
         if response.stop_reason == "tool_use":
-            tool_use_block = next((b for b in response.content if b.type == "tool_use"), None)
+            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-            if tool_use_block:
-                # Executa a ferramenta correta
-                if tool_use_block.name == "search_web":
-                    query = tool_use_block.input.get("query", req.message)
-                    tool_result = do_search(query)
-                elif tool_use_block.name == "save_diary":
-                    diary_title = tool_use_block.input.get("title", "")
-                    diary_content = tool_use_block.input.get("content", "")
-                    save_diary(diary_title, diary_content)
-                    tool_result = "Entrada salva no diario com sucesso."
-                else:
-                    tool_result = "Ferramenta desconhecida."
+            if tool_use_blocks:
+                # Executa TODOS os tool_use blocks e coleta um tool_result para cada um
+                tool_results = []
+                for tb in tool_use_blocks:
+                    if tb.name == "search_web":
+                        result_text = do_search(tb.input.get("query", req.message))
+                    elif tb.name == "save_diary":
+                        diary_title = tb.input.get("title", "")
+                        diary_content = tb.input.get("content", "")
+                        save_diary(diary_title, diary_content)
+                        result_text = "Entrada salva no diario com sucesso."
+                    else:
+                        result_text = "Ferramenta desconhecida."
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tb.id,
+                        "content": result_text
+                    })
 
-                # Monta historico com resultado
+                # Monta assistant_content com todos os blocos da resposta
                 assistant_content = []
                 for b in response.content:
                     if b.type == "text":
@@ -268,14 +270,7 @@ def chat(req: ChatRequest):
                         })
 
                 history.append({"role": "assistant", "content": assistant_content})
-                history.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_block.id,
-                        "content": tool_result
-                    }]
-                })
+                history.append({"role": "user", "content": tool_results})
 
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
@@ -290,7 +285,7 @@ def chat(req: ChatRequest):
         save_message("assistant", reply)
 
         result = {"reply": reply}
-        if "diary_title" in locals() and "diary_content" in locals():
+        if diary_title is not None and diary_content is not None:
             result["diary_saved"] = True
             result["diary_title"] = diary_title
             result["diary_content"] = diary_content
