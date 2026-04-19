@@ -554,6 +554,15 @@ class JarvisApp(ctk.CTk):
                     threading.Thread(target=self._gerar_questoes_simulado, args=(resto, bloco), daemon=True).start()
                     return True
 
+        # Web Clipper — salvar artigo de URL
+        for prefix in ["clipar ", "clip ", "salvar artigo ", "capturar artigo ",
+                        "salvar link ", "capturar link ", "salvar pagina ", "clipar artigo "]:
+            if t.startswith(prefix):
+                url = text[len(prefix):].strip()
+                if url.startswith("http"):
+                    threading.Thread(target=self._web_clipper, args=(url,), daemon=True).start()
+                    return True
+
         # Processar inbox
         if any(k in t for k in ["processar inbox", "processar a inbox", "processar minha inbox",
                                   "organizar inbox", "limpar inbox", "classificar inbox"]):
@@ -1154,6 +1163,80 @@ class JarvisApp(ctk.CTk):
 
         self.after(0, lambda: self._set_status("Pronto!", "#00ff88"))
 
+    def _web_clipper(self, url):
+        """Captura uma URL, resume com Claude e salva na _inbox do Obsidian."""
+        import re
+        from html.parser import HTMLParser
+
+        class _TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.text = []
+                self.title = ""
+                self._in_title = False
+                self._skip = False
+                self._SKIP = {"script", "style", "nav", "footer", "header", "aside", "menu"}
+            def handle_starttag(self, tag, attrs):
+                if tag in self._SKIP: self._skip = True
+                if tag == "title": self._in_title = True
+            def handle_endtag(self, tag):
+                if tag in self._SKIP: self._skip = False
+                if tag == "title": self._in_title = False
+            def handle_data(self, data):
+                d = data.strip()
+                if not d: return
+                if self._in_title: self.title += d
+                elif not self._skip: self.text.append(d)
+
+        try:
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME,
+                f"Capturando artigo: {url[:60]}...", "#00bfff"))
+            self.after(0, lambda: self._set_status("Capturando...", "#00ff88"))
+
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+
+            extractor = _TextExtractor()
+            extractor.feed(resp.text)
+
+            title = extractor.title.strip() or url.split("/")[-1] or "artigo"
+            raw_text = "\n".join(extractor.text)[:10000]
+
+            prompt = (f"Analise o conteúdo desta página web e crie uma nota estruturada em markdown:\n\n"
+                      f"URL: {url}\nTítulo: {title}\n\nConteúdo:\n{raw_text}\n\n"
+                      f"Formato da nota:\n"
+                      f"# [Título]\n\n"
+                      f"## Resumo\n[2-3 parágrafos com os pontos principais]\n\n"
+                      f"## Pontos-chave\n- [tópicos importantes]\n\n"
+                      f"## Conexões com estudo\n[como isso se relaciona com concursos/Petrobras se aplicável]\n\n"
+                      f"**Fonte:** {url}\n\n"
+                      f"Responda APENAS com o markdown final.")
+
+            res = requests.post(f"{SERVER_URL}/chat", json={"message": prompt}, timeout=120)
+            res.raise_for_status()
+            content = res.json()["reply"]
+
+            today = datetime.now().strftime("%Y-%m-%d")
+            safe_title = re.sub(r'[^\w\s-]', '', title).strip().replace(' ', '_')[:50]
+            filename = f"{safe_title}_{today}.md"
+
+            inbox_path = os.path.join(OBSIDIAN_VAULT, "_inbox")
+            os.makedirs(inbox_path, exist_ok=True)
+
+            header = (f"---\nfonte: \"{url}\"\ndata: {today}\ntags: [clipping, web]\nstatus: \"🔴 pendente\"\n---\n\n")
+            with open(os.path.join(inbox_path, filename), "w", encoding="utf-8") as f:
+                f.write(header + content)
+
+            msg = f"Artigo salvo na inbox: {filename}\nDiga 'processar inbox' para mover para a pasta certa."
+            self.after(0, lambda: self._add_message(ASSISTANT_NAME, msg, "#00ff88"))
+            self.after(0, lambda: self._speak("Artigo capturado e salvo na inbox."))
+            self.after(0, lambda: self._set_status("Pronto!", "#00ff88"))
+
+        except Exception as e:
+            self.after(0, lambda: self._add_message("ERRO", f"Erro ao capturar artigo: {str(e)}", "#ff4444"))
+            self.after(0, lambda: self._set_status("Erro.", "#ff4444"))
+
     def _search_vault(self, query):
         """Busca notas relevantes no vault pelo conteudo da pergunta."""
         try:
@@ -1188,6 +1271,11 @@ class JarvisApp(ctk.CTk):
             return
         if "youtube.com/watch" in text or "youtu.be/" in text:
             threading.Thread(target=self._process_youtube, args=(text.strip(),), daemon=True).start()
+            return
+        # URL genérica (não-YouTube) → Web Clipper automático
+        stripped = text.strip()
+        if stripped.startswith("http") and " " not in stripped and "youtube" not in stripped.lower():
+            threading.Thread(target=self._web_clipper, args=(stripped,), daemon=True).start()
             return
         if text.strip().lower().endswith(".pdf") and os.path.isfile(text.strip()):
             threading.Thread(target=self._extract_and_study_pdf, args=(text.strip(),), daemon=True).start()
